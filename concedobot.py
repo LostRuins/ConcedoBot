@@ -25,7 +25,7 @@ submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
 admin_name = os.getenv("ADMIN_NAME")
 wi_db = {
     "concedo,kobold,koboldcpp,kcpp,ggml,gguf,wiki,help":"KoboldCpp=AI text-generation software for GGML and GGUF models for the KoboldAI Community, made by Concedo. Forked from llama.cpp. Single exe file. Powers ConcedoBot. Get help at https://github.com/LostRuins/koboldcpp/wiki",
-    "henk,united,kobold":"Henky=Admin of KoboldAI discord server, manages KoboldAI United, an earlier text-generation software",
+    "henk,united,kobold":"Henky=Admin of KoboldAI discord server, manages KoboldAI United, an earlier text-generation software at https://github.com/henk717/KoboldAI",
     "concedo,koboldcpp,lite":"Concedo=Programmer of KoboldCpp, Kobold Lite, and ConcedoBot, also known as LostRuins",
     "lite,frontend":"Kobold Lite=Lightweight WebUI for text-generation at https://lite.koboldai.net",
     "horde,db0":"AI Horde=Crowdsourced distributed cluster of image and text generation servers, made by db0",
@@ -204,6 +204,13 @@ async def on_message(message):
                 bot_reply_timestamp[channelid] = time.time() - 9999
                 print(f"Reset channel: {channelid}")
                 await message.channel.send("Very well, Sire, the clean slate it is. I will henceforth ignore all conversations prior to this message. Seek me again, and I shall be at your service.")
+        elif message.clean_content.startswith("/status"):
+            if channelid in chat_history:
+                print(f"Status channel: {channelid}")
+                lastreq = int(time.time() - bot_reply_timestamp[channelid])
+                lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
+                await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
+
 
     if not ready_to_go or message.author == client.user or message.clean_content.startswith(("/")):
         return
