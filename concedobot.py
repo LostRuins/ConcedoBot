@@ -21,6 +21,7 @@ intents = discord.Intents.all()
 client = discord.Client(command_prefix="!", intents=intents)
 chat_history = {} # a dict of channels, each containing an array of messages
 bot_reply_timestamp = {}  # a dict of channels, each containing a timestamp of last bot response
+bot_whitelist_timestamp = {} # a dict of channels. If not zero, do not reply if time exceeds whitelist ts
 ready_to_go = False
 busy = threading.Lock() # a global flag, never handle more than 1 request at a time
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
@@ -208,11 +209,22 @@ async def on_message(message):
                 print(f"Added new channel: {channelid}")
                 chat_history[channelid] = []
                 bot_reply_timestamp[channelid] = time.time() - 9999 #sleep first
-                await message.channel.send("Sire, I have added this channel to the whitelist, and will now be of service here whenever you ping me.")
+                if message.clean_content.startswith("/botwhitelisttemp "):
+                    wltim = 100
+                    try:
+                        wltim = int(message.clean_content.split()[1])
+                    except Exception as e:
+                        pass
+                    bot_whitelist_timestamp[channelid] = time.time() + wltim
+                    await message.channel.send(f"Sire, I have temporarily added this channel to the whitelist for the next {wltim} seconds, and will now be of service here whenever you ping me.")
+                else:
+                    bot_whitelist_timestamp[channelid] = 0
+                    await message.channel.send(f"Sire, I have added this channel to the whitelist, and will now be of service here whenever you ping me.")
         elif message.clean_content.startswith("/botblacklist"):
             if channelid in chat_history:
                 del chat_history[channelid]
                 del bot_reply_timestamp[channelid]
+                del bot_whitelist_timestamp[channelid]
                 print(f"Removed channel: {channelid}")
                 await message.channel.send("Sire, I have removed this channel from the whitelist, and will no longer reply here.")
         elif message.clean_content.startswith("/botmaxlen "):
@@ -233,16 +245,21 @@ async def on_message(message):
     if channelid not in chat_history:
        return
 
+    if channelid in bot_whitelist_timestamp:
+        if bot_whitelist_timestamp[channelid] > 0 and (time.time() > bot_whitelist_timestamp[channelid]):
+            return
+
     append_history(channelid,message.author.display_name,message.clean_content)
 
     is_reply_to_bot = (message.reference and message.reference.resolved.author == client.user)
     mentions_bot = client.user in message.mentions
     contains_bot_name = (client.user.display_name.lower() in message.clean_content.lower()) or (client.user.name.lower() in message.clean_content.lower())
+    is_reply_someone_else = (message.reference and message.reference.resolved.author != client.user)
 
     #get the last message we sent time in seconds
     secsincelastreply = time.time() - bot_reply_timestamp[channelid]
 
-    if secsincelastreply < 120 or (is_reply_to_bot or mentions_bot or contains_bot_name):
+    if not is_reply_someone_else and (secsincelastreply < 120 or (is_reply_to_bot or mentions_bot or contains_bot_name)):
         if busy.acquire(blocking=False):
             try:
                 async with message.channel.typing():
