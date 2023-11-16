@@ -1,0 +1,2 @@
+sudo su concedobot
+nohup python concedobot.py >/dev/null 2>&1 &
