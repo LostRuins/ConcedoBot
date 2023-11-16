@@ -2,6 +2,8 @@
 # sadly requires installing discord.py, python-dotenv and requests
 # but should be very easy to use.
 
+# it's very hacky and very clunky now, so use with caution
+
 # Configure credentials in .env
 
 import discord
@@ -12,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv("ADMIN_NAME"):
-    print("Missing .env variables")
+    print("Missing .env variables. Cannot continue.")
     exit()
 
 intents = discord.Intents.all()
