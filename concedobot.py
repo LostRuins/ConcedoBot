@@ -23,6 +23,7 @@ ready_to_go = False
 busy = threading.Lock() # a global flag, never handle more than 1 request at a time
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
 admin_name = os.getenv("ADMIN_NAME")
+maxlen = 250
 wi_db = {
     "concedo,kobold,koboldcpp,kcpp,ggml,gguf,wiki,help":"KoboldCpp=AI text-generation software for GGML and GGUF models for the KoboldAI Community, made by Concedo. Forked from llama.cpp. Single exe file. Powers ConcedoBot. Get help at https://github.com/LostRuins/koboldcpp/wiki",
     "henk,united,kobold":"Henky=Admin of KoboldAI discord server, manages KoboldAI United, an earlier text-generation software at https://github.com/henk717/KoboldAI",
@@ -125,7 +126,7 @@ def append_history(channelid,author,text):
         chat_history[channelid].pop(0)
 
 def prepare_payload(channelid):
-    global widb
+    global widb, maxlen
     basememory = f"[Character: {client.user.display_name}; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh; description: {client.user.display_name} is a well-mannered digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between {client.user.display_name} and various users. Do not use markdown.]\n"
     intromemory = f"\n### {client.user.display_name}: Quite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
 
@@ -139,7 +140,7 @@ def prepare_payload(channelid):
     payload = {
     "n": 1,
     "max_context_length": 4096,
-    "max_length": 200,
+    "max_length": maxlen,
     "rep_pen": 1.1,
     "temperature": 0.7,
     "top_p": 0.92,
@@ -174,7 +175,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    global ready_to_go, chat_history
+    global ready_to_go, chat_history, maxlen
     channelid = message.channel.id
     if message.clean_content.startswith("/sleep"):
         instructions=[
@@ -185,7 +186,14 @@ async def on_message(message):
         ins = random.choice(instructions)
         bot_reply_timestamp[channelid] = time.time() - 9999
         await message.channel.send(ins)
-    if message.author.name.lower() == admin_name.lower():
+    elif message.clean_content.startswith("/status"):
+        if channelid in chat_history:
+            print(f"Status channel: {channelid}")
+            lastreq = int(time.time() - bot_reply_timestamp[channelid])
+            lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
+            await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
+
+    if message.author.name.lower() == admin_name.lower(): #admin only commands
         if message.clean_content.startswith("/whitelist"):
             if channelid not in chat_history:
                 print(f"Added new channel: {channelid}")
@@ -204,13 +212,17 @@ async def on_message(message):
                 bot_reply_timestamp[channelid] = time.time() - 9999
                 print(f"Reset channel: {channelid}")
                 await message.channel.send("Very well, Sire, the clean slate it is. I will henceforth ignore all conversations prior to this message. Seek me again, and I shall be at your service.")
-        elif message.clean_content.startswith("/status"):
+        elif message.clean_content.startswith("/maxlen "):
             if channelid in chat_history:
-                print(f"Status channel: {channelid}")
-                lastreq = int(time.time() - bot_reply_timestamp[channelid])
-                lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
-                await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
-
+                try:
+                    oldlen = maxlen
+                    newlen = int(message.clean_content.split()[1])
+                    maxlen = newlen
+                    print(f"Maxlen: {channelid} to {newlen}")
+                    await message.channel.send(f"As you wish, Sire, I have adjusted my maximum response length from {oldlen} to {newlen}.")
+                except Exception as e:
+                    maxlen = 250
+                    await message.channel.send(f"I apologize, Sire, but the command failed.")
 
     if not ready_to_go or message.author == client.user or message.clean_content.startswith(("/")):
         return
