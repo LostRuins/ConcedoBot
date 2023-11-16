@@ -177,7 +177,7 @@ async def on_ready():
 async def on_message(message):
     global ready_to_go, chat_history, maxlen
     channelid = message.channel.id
-    if message.clean_content.startswith("/sleep"):
+    if message.clean_content.startswith("/botsleep"):
         instructions=[
         'Very good, Sire, I shall take my leave. Should you require my services again thereafter, simply ping for me, and I shall promptly return to be at your disposal.',
         'Sire, I shall now make my exit at once. Should you find yourself in need of further assistance henceforth, a mere ping shall suffice, and I shall be summoned to attend to your requirements.',
@@ -186,33 +186,34 @@ async def on_message(message):
         ins = random.choice(instructions)
         bot_reply_timestamp[channelid] = time.time() - 9999
         await message.channel.send(ins)
-    elif message.clean_content.startswith("/status"):
+    elif message.clean_content.startswith("/botstatus"):
         if channelid in chat_history:
             print(f"Status channel: {channelid}")
             lastreq = int(time.time() - bot_reply_timestamp[channelid])
             lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
             await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
+    elif message.clean_content.startswith("/botreset"):
+        if channelid in chat_history:
+            chat_history[channelid] = []
+            bot_reply_timestamp[channelid] = time.time() - 9999
+            print(f"Reset channel: {channelid}")
+            await message.channel.send("Very well, Sire, the clean slate it is. I will henceforth ignore all conversations prior to this message. Seek me again, and I shall be at your service.")
+
 
     if message.author.name.lower() == admin_name.lower(): #admin only commands
-        if message.clean_content.startswith("/whitelist"):
+        if message.clean_content.startswith("/botwhitelist"):
             if channelid not in chat_history:
                 print(f"Added new channel: {channelid}")
                 chat_history[channelid] = []
                 bot_reply_timestamp[channelid] = time.time() - 9999 #sleep first
                 await message.channel.send("Sire, I have added this channel to the whitelist, and will now be of service here whenever you ping me.")
-        elif message.clean_content.startswith("/blacklist"):
+        elif message.clean_content.startswith("/botblacklist"):
             if channelid in chat_history:
                 del chat_history[channelid]
                 del bot_reply_timestamp[channelid]
                 print(f"Removed channel: {channelid}")
                 await message.channel.send("Sire, I have removed this channel from the whitelist, and will no longer reply here.")
-        elif message.clean_content.startswith("/reset"):
-            if channelid in chat_history:
-                chat_history[channelid] = []
-                bot_reply_timestamp[channelid] = time.time() - 9999
-                print(f"Reset channel: {channelid}")
-                await message.channel.send("Very well, Sire, the clean slate it is. I will henceforth ignore all conversations prior to this message. Seek me again, and I shall be at your service.")
-        elif message.clean_content.startswith("/maxlen "):
+        elif message.clean_content.startswith("/botmaxlen "):
             if channelid in chat_history:
                 try:
                     oldlen = maxlen
