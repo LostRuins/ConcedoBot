@@ -19,14 +19,25 @@ if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv(
 
 intents = discord.Intents.all()
 client = discord.Client(command_prefix="!", intents=intents)
-chat_history = {} # a dict of channels, each containing an array of messages
-bot_reply_timestamp = {}  # a dict of channels, each containing a timestamp of last bot response
-bot_whitelist_timestamp = {} # a dict of channels. If not zero, do not reply if time exceeds whitelist ts
 ready_to_go = False
 busy = threading.Lock() # a global flag, never handle more than 1 request at a time
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
 admin_name = os.getenv("ADMIN_NAME")
 maxlen = 250
+
+class BotChannelData(): #key will be the channel ID
+    def __init__(self, chat_history, bot_reply_timestamp, bot_whitelist_timestamp):
+        self.chat_history = chat_history # containing an array of messages
+        self.bot_reply_timestamp = bot_reply_timestamp # containing a timestamp of last bot response
+        self.bot_whitelist_timestamp = bot_whitelist_timestamp # If not zero, do not reply if time exceeds whitelist ts
+        self.bot_coffeemode = False
+        self.bot_idletime = 120
+        self.bot_botloopcount = 0
+
+
+# bot storage
+bot_data = {} # a dict of all channels, each containing BotChannelData as value and channelid as key
+
 wi_db = {
     "concedo,kobold,koboldcpp,kcpp,ggml,gguf,wiki,help":"KoboldCpp=AI text-generation software for GGML and GGUF models for the KoboldAI Community, made by Concedo. Forked from llama.cpp. Single exe file. Powers ConcedoBot. Get help at https://github.com/LostRuins/koboldcpp/wiki",
     "henk,united,kobold":"Henky=Admin of KoboldAI discord server, manages KoboldAI United, an earlier text-generation software at https://github.com/henk717/KoboldAI",
@@ -94,18 +105,20 @@ wi_db = {
 }
 
 def concat_history(channelid):
-    global chat_history
+    global bot_data
+    currchannel = bot_data[channelid]
     prompt = ""
-    for msg in chat_history[channelid]:
+    for msg in currchannel.chat_history:
         prompt += "### " + msg + "\n"
     prompt += "### " + client.user.display_name + ": "
     return prompt
 
 def prepare_wi(channelid):
-    global chat_history,wi_db
+    global bot_data,wi_db
+    currchannel = bot_data[channelid]
     scanprompt = ""
     addwi = ""
-    for msg in chat_history[channelid][-3:]: #only consider the last 3 messages for wi
+    for msg in (currchannel.chat_history)[-3:]: #only consider the last 3 messages for wi
         scanprompt += msg + "\n"
     scanprompt = scanprompt.lower()
     for keystr, value in wi_db.items():
@@ -118,15 +131,16 @@ def prepare_wi(channelid):
     return addwi
 
 def append_history(channelid,author,text):
-    global chat_history
+    global bot_data
+    currchannel = bot_data[channelid]
     if len(text) > 1000: #each message is limited to 1k chars
         text = text[:1000] + "..."
     msgstr = f"{author}: {text}"
-    chat_history[channelid].append(msgstr)
+    currchannel.chat_history.append(msgstr)
     print(f"{channelid} msg {msgstr}")
 
-    if len(chat_history[channelid]) > 20: #limited to last 20 msgs
-        chat_history[channelid].pop(0)
+    if len(currchannel.chat_history) > 20: #limited to last 20 msgs
+        currchannel.chat_history.pop(0)
 
 def prepare_payload(channelid):
     global widb, maxlen
@@ -178,57 +192,45 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    global ready_to_go, chat_history, maxlen
+    global ready_to_go, bot_data, maxlen
+
+    if not ready_to_go:
+        return
+
     channelid = message.channel.id
-    if message.clean_content.startswith("/botsleep"):
-        instructions=[
-        'Very good, Sire, I shall take my leave. Should you require my services again thereafter, simply ping for me, and I shall promptly return to be at your disposal.',
-        'Sire, I shall now make my exit at once. Should you find yourself in need of further assistance henceforth, a mere ping shall suffice, and I shall be summoned to attend to your requirements.',
-        'Exceptionally well, Sire, I shall take my departure at your behest. Should you have need for me, a ping shall fetch me promptly to accommodate any needs that arise.',
-        'Sire, I bid you farewell for now. Should further needs arise, I am but a ping away, and shall hasten to offer my services at your command.']
-        ins = random.choice(instructions)
-        bot_reply_timestamp[channelid] = time.time() - 9999
-        await message.channel.send(ins)
-    elif message.clean_content.startswith("/botstatus"):
-        if channelid in chat_history:
-            print(f"Status channel: {channelid}")
-            lastreq = int(time.time() - bot_reply_timestamp[channelid])
-            lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
-            await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
-    elif message.clean_content.startswith("/botreset"):
-        if channelid in chat_history:
-            chat_history[channelid] = []
-            bot_reply_timestamp[channelid] = time.time() - 9999
-            print(f"Reset channel: {channelid}")
-            await message.channel.send("Very well, Sire, the clean slate it is. I will henceforth ignore all conversations prior to this message. Seek me again, and I shall be at your service.")
 
-
-    if message.author.name.lower() == admin_name.lower(): #admin only commands
+    # handle admin only commands
+    if message.author.name.lower() == admin_name.lower():
         if message.clean_content.startswith("/botwhitelist"):
-            if channelid not in chat_history:
-                print(f"Added new channel: {channelid}")
-                chat_history[channelid] = []
-                bot_reply_timestamp[channelid] = time.time() - 9999 #sleep first
+            if channelid not in bot_data:
+                print(f"Add new channel: {channelid}")
+                rtim = time.time() - 9999 #sleep first
+                wltim = 0
                 if message.clean_content.startswith("/botwhitelisttemp "):
-                    wltim = 100
+                    addsec = 100
                     try:
-                        wltim = int(message.clean_content.split()[1])
+                        addsec = int(message.clean_content.split()[1])
                     except Exception as e:
+                        addsec = 100
                         pass
-                    bot_whitelist_timestamp[channelid] = time.time() + wltim
-                    await message.channel.send(f"Sire, I have temporarily added this channel to the whitelist for the next {wltim} seconds, and will now be of service here whenever you ping me.")
+                    wltim = time.time() + addsec
+
+                bot_data[channelid] = BotChannelData([],rtim,wltim)
+                if wltim > 0:
+                    await message.channel.send(f"Sire, I have temporarily added this channel to the whitelist for the next {addsec} seconds, and will now be of service here whenever you ping me.")
                 else:
-                    bot_whitelist_timestamp[channelid] = 0
                     await message.channel.send(f"Sire, I have added this channel to the whitelist, and will now be of service here whenever you ping me.")
+            else:
+                await message.channel.send(f"Sire, I was already whitelisted in this channel previously. Please blacklist and then whitelist me here again.")
+
         elif message.clean_content.startswith("/botblacklist"):
-            if channelid in chat_history:
-                del chat_history[channelid]
-                del bot_reply_timestamp[channelid]
-                del bot_whitelist_timestamp[channelid]
-                print(f"Removed channel: {channelid}")
+            if channelid in bot_data:
+                del bot_data[channelid]
+                print(f"Remove channel: {channelid}")
                 await message.channel.send("Sire, I have removed this channel from the whitelist, and will no longer reply here.")
+
         elif message.clean_content.startswith("/botmaxlen "):
-            if channelid in chat_history:
+            if channelid in bot_data:
                 try:
                     oldlen = maxlen
                     newlen = int(message.clean_content.split()[1])
@@ -238,16 +240,68 @@ async def on_message(message):
                 except Exception as e:
                     maxlen = 250
                     await message.channel.send(f"I apologize, Sire, but the command failed.")
+        elif message.clean_content.startswith("/botidletime "):
+            if channelid in bot_data:
+                try:
+                    oldval = bot_data[channelid].bot_idletime
+                    newval = int(message.clean_content.split()[1])
+                    bot_data[channelid].bot_idletime = newval
+                    print(f"Idletime: {channelid} to {newval}")
+                    await message.channel.send(f"As you wish, Sire, I have adjusted my idle timeout from {oldval} to {newval}.")
+                except Exception as e:
+                    bot_data[channelid].bot_idletime = 120
+                    await message.channel.send(f"I apologize, Sire, but the command failed.")
+        elif message.clean_content.startswith("/botcoffeemode"):
+            if channelid in bot_data:
+                bot_data[channelid].bot_coffeemode = True
+                await message.channel.send(f"As you command, Sire, I am now in Coffee Mode, and will stay awake until I receive a new message.")
 
-    if not ready_to_go or message.author == client.user or message.clean_content.startswith(("/")):
-        return
-
-    if channelid not in chat_history:
+    # gate before nonwhitelisted channels
+    if channelid not in bot_data:
        return
 
-    if channelid in bot_whitelist_timestamp:
-        if bot_whitelist_timestamp[channelid] > 0 and (time.time() > bot_whitelist_timestamp[channelid]):
-            return
+    currchannel = bot_data[channelid]
+
+    # commands anyone can use
+    if message.clean_content.startswith("/botsleep"):
+        instructions=[
+        'Very good, Sire, I shall take my leave. Should you require my services again thereafter, simply ping for me, and I shall promptly return to be at your disposal.',
+        'Sire, I shall now make my exit at once. Should you find yourself in need of further assistance henceforth, a mere ping shall suffice, and I shall be summoned to attend to your requirements.',
+        'Exceptionally well, Sire, I shall take my departure at your behest. Should you have need for me, a ping shall fetch me promptly to accommodate any needs that arise.',
+        'Sire, I bid you farewell for now. Should further needs arise, I am but a ping away, and shall hasten to offer my services at your command.']
+        ins = random.choice(instructions)
+        currchannel.bot_reply_timestamp = time.time() - 9999
+        await message.channel.send(ins)
+    elif message.clean_content.startswith("/botstatus"):
+        if channelid in bot_data:
+            print(f"Status channel: {channelid}")
+            lastreq = int(time.time() - currchannel.bot_reply_timestamp)
+            lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
+            await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
+    elif message.clean_content.startswith("/botreset"):
+        if channelid in bot_data:
+            currchannel.chat_history = []
+            currchannel.bot_reply_timestamp = time.time() - 9999
+            print(f"Reset channel: {channelid}")
+            instructions=[
+            "Very well, Sire, the clean slate it is. I will henceforth ignore all conversations prior to this message. Seek me again, and I shall be at your service.",
+            "At your request, Sire, I have purged my databases of all prior messages in this channel. Kindly send me a ping, and I shall be once more at your call."
+            ]
+            ins = random.choice(instructions)
+            await message.channel.send(ins)
+
+
+    # handle regular chat messages
+    if message.author == client.user or message.clean_content.startswith(("/")):
+        return
+
+    currchannel = bot_data[channelid]
+
+    if currchannel.bot_whitelist_timestamp > 0 and (time.time() > currchannel.bot_whitelist_timestamp):
+        # remove from whitelist
+        if channelid in bot_data:
+            del bot_data[channelid]
+        return
 
     append_history(channelid,message.author.display_name,message.clean_content)
 
@@ -257,14 +311,26 @@ async def on_message(message):
     is_reply_someone_else = (message.reference and message.reference.resolved.author != client.user)
 
     #get the last message we sent time in seconds
-    secsincelastreply = time.time() - bot_reply_timestamp[channelid]
+    secsincelastreply = time.time() - currchannel.bot_reply_timestamp
 
-    if not is_reply_someone_else and (secsincelastreply < 120 or (is_reply_to_bot or mentions_bot or contains_bot_name)):
+    if message.author.bot:
+        currchannel.bot_botloopcount += 1
+    else:
+        currchannel.bot_botloopcount = 0
+
+    if currchannel.bot_botloopcount > 4:
+        return
+    elif currchannel.bot_botloopcount == 4:
+        await message.channel.send(f"Sire, it appears that I am stuck in a conversation loop with another bot or AI. I will refrain from replying further until this situation resolves.")
+        return
+
+    if not is_reply_someone_else and (secsincelastreply < currchannel.bot_idletime or currchannel.bot_coffeemode or (is_reply_to_bot or mentions_bot or contains_bot_name)):
         if busy.acquire(blocking=False):
             try:
                 async with message.channel.typing():
                     # keep awake on any reply
-                    bot_reply_timestamp[channelid] = time.time()
+                    currchannel.bot_reply_timestamp = time.time()
+                    currchannel.bot_coffeemode = False
                     payload = prepare_payload(channelid)
                     print(payload)
                     response = requests.post(submit_endpoint, json=payload)
