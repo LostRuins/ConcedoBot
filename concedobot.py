@@ -201,7 +201,7 @@ async def on_message(message):
 
     # handle admin only commands
     if message.author.name.lower() == admin_name.lower():
-        if message.clean_content.startswith("/botwhitelist"):
+        if message.clean_content.startswith("/botwhitelist") and client.user in message.mentions:
             if channelid not in bot_data:
                 print(f"Add new channel: {channelid}")
                 rtim = time.time() - 9999 #sleep first
@@ -223,13 +223,13 @@ async def on_message(message):
             else:
                 await message.channel.send(f"Sire, I was already whitelisted in this channel previously. Please blacklist and then whitelist me here again.")
 
-        elif message.clean_content.startswith("/botblacklist"):
+        elif message.clean_content.startswith("/botblacklist") and client.user in message.mentions:
             if channelid in bot_data:
                 del bot_data[channelid]
                 print(f"Remove channel: {channelid}")
                 await message.channel.send("Sire, I have removed this channel from the whitelist, and will no longer reply here.")
 
-        elif message.clean_content.startswith("/botmaxlen "):
+        elif message.clean_content.startswith("/botmaxlen ") and client.user in message.mentions:
             if channelid in bot_data:
                 try:
                     oldlen = maxlen
@@ -240,7 +240,7 @@ async def on_message(message):
                 except Exception as e:
                     maxlen = 250
                     await message.channel.send(f"I apologize, Sire, but the command failed.")
-        elif message.clean_content.startswith("/botidletime "):
+        elif message.clean_content.startswith("/botidletime ") and client.user in message.mentions:
             if channelid in bot_data:
                 try:
                     oldval = bot_data[channelid].bot_idletime
@@ -251,7 +251,7 @@ async def on_message(message):
                 except Exception as e:
                     bot_data[channelid].bot_idletime = 120
                     await message.channel.send(f"I apologize, Sire, but the command failed.")
-        elif message.clean_content.startswith("/botcoffeemode"):
+        elif message.clean_content.startswith("/botcoffeemode") and client.user in message.mentions:
             if channelid in bot_data:
                 bot_data[channelid].bot_coffeemode = True
                 await message.channel.send(f"As you command, Sire, I am now in Coffee Mode, and will stay awake until I receive a new message.")
@@ -263,7 +263,7 @@ async def on_message(message):
     currchannel = bot_data[channelid]
 
     # commands anyone can use
-    if message.clean_content.startswith("/botsleep"):
+    if message.clean_content.startswith("/botsleep") and client.user in message.mentions:
         instructions=[
         'Very good, Sire, I shall take my leave. Should you require my services again thereafter, simply ping for me, and I shall promptly return to be at your disposal.',
         'Sire, I shall now make my exit at once. Should you find yourself in need of further assistance henceforth, a mere ping shall suffice, and I shall be summoned to attend to your requirements.',
@@ -272,13 +272,13 @@ async def on_message(message):
         ins = random.choice(instructions)
         currchannel.bot_reply_timestamp = time.time() - 9999
         await message.channel.send(ins)
-    elif message.clean_content.startswith("/botstatus"):
+    elif message.clean_content.startswith("/botstatus") and client.user in message.mentions:
         if channelid in bot_data:
             print(f"Status channel: {channelid}")
             lastreq = int(time.time() - currchannel.bot_reply_timestamp)
             lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
             await message.channel.send(f"Sire, I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
-    elif message.clean_content.startswith("/botreset"):
+    elif message.clean_content.startswith("/botreset") and client.user in message.mentions:
         if channelid in bot_data:
             currchannel.chat_history = []
             currchannel.bot_reply_timestamp = time.time() - 9999
