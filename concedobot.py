@@ -101,7 +101,7 @@ wi_db = {
     "mmq":"mmq can be added to --usecublas to use quantized matrix multiplication in CUDA during prompt processing, instead of using cuBLAS for matrix multiplication, using less VRAM.",
     "unbant,unban t,eos":"Language models will use a special EOS (End-Of-Stream) token to indicate when they have finished responding.",
     "api,documentation,docs":"API documentation for koboldcpp can be found on the koboldcpp wiki https://github.com/LostRuins/koboldcpp/wiki",
-    "source code":"Source code for Kobold is on GitHub. Source code for ConcedoBot is not currently available, but may be provided on request. Please ask Concedo."
+    "source code":"Source code for Kobold is on GitHub. Source code for ConcedoBot is at https://github.com/LostRuins/ConcedoBot"
 }
 
 def concat_history(channelid):
