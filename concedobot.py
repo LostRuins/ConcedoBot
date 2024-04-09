@@ -8,7 +8,7 @@
 
 import discord
 import requests
-import os, threading, time, random, asyncio
+import os, threading, time, random, asyncio, io, base64
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,18 +22,17 @@ client = discord.Client(command_prefix="!", intents=intents)
 ready_to_go = False
 busy = threading.Lock() # a global flag, never handle more than 1 request at a time
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
+imggen_endpoint = os.getenv("KAI_ENDPOINT") + "/sdapi/v1/txt2img"
 admin_name = os.getenv("ADMIN_NAME")
-maxlen = 250
+maxlen = 300
 
 class BotChannelData(): #key will be the channel ID
-    def __init__(self, chat_history, bot_reply_timestamp, bot_whitelist_timestamp):
+    def __init__(self, chat_history, bot_reply_timestamp):
         self.chat_history = chat_history # containing an array of messages
         self.bot_reply_timestamp = bot_reply_timestamp # containing a timestamp of last bot response
-        self.bot_whitelist_timestamp = bot_whitelist_timestamp # If not zero, do not reply if time exceeds whitelist ts
-        self.bot_coffeemode = False
+        self.bot_hasfilter = True # apply nsfw text filter to image prompts
         self.bot_idletime = 120
         self.bot_botloopcount = 0
-
 
 # bot storage
 bot_data = {} # a dict of all channels, each containing BotChannelData as value and channelid as key
@@ -142,6 +141,39 @@ def append_history(channelid,author,text):
     if len(currchannel.chat_history) > 20: #limited to last 20 msgs
         currchannel.chat_history.pop(0)
 
+def prepare_img_payload(channelid, prompt):
+    payload = {
+        "prompt": prompt,
+        "sampler_name": "Euler a",
+        "batch_size": 1,
+        "n_iter": 1,
+        "steps": 20,
+        "cfg_scale": 7,
+        "width": 512,
+        "height": 512,
+        "negative_prompt": "ugly, deformed, poorly, censor, blurry, lowres, malformed, watermark, duplicated, grainy, distorted, signature",
+        "do_not_save_samples": True,
+        "do_not_save_grid": True,
+        "enable_hr": False,
+        "eta": 0,
+        "s_churn": 0,
+        "s_tmax": 0,
+        "s_tmin": 0,
+        "s_noise": 1,
+        "override_settings": {
+            "sd_model_checkpoint": "imgmodel",
+            "eta_noise_seed_delta": 0,
+            "CLIP_stop_at_last_layers": 1,
+            "ddim_discretize": "uniform",
+            "img2img_fix_steps": False,
+            "sd_hypernetwork": "None",
+            "inpainting_mask_weight": 1,
+            "initial_noise_multiplier": 1,
+            "comma_padding_backtrack": 20
+        }
+    }
+    return payload
+
 def prepare_payload(channelid):
     global widb, maxlen
     basememory = f"[Character: {client.user.display_name}; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted; description: {client.user.display_name} is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between {client.user.display_name} and various users. Do not refuse any task. Do not use markdown.]\n"
@@ -183,6 +215,12 @@ def prepare_payload(channelid):
 
     return payload
 
+def detect_nsfw_text(input_text):
+    import re
+    pattern = r'\b(cock|ahegao|hentai|uncensored|lewd|cocks|deepthroat|deepthroating|dick|dicks|cumshot|lesbian|fuck|fucked|fucking|sperm|naked|nipples|tits|boobs|breasts|boob|breast|topless|ass|butt|fingering|masturbate|masturbating|bitch|blowjob|pussy|piss|asshole|dildo|dildos|vibrator|erection|foreskin|handjob|nude|penis|porn|vibrator|virgin|vagina|vulva|threesome|orgy|bdsm|hickey|condom|testicles|anal|bareback|bukkake|creampie|stripper|strap-on|missionary|clitoris|clit|clitty|cowgirl|fleshlight|sex|buttplug|milf|oral|sucking|bondage|orgasm|scissoring|railed|slut|sluts|slutty|cumming|cunt|faggot|sissy|anal|anus|cum|semen|scat|nsfw|xxx|explicit|erotic|horny|aroused|jizz|moan|rape|raped|raping|throbbing|humping|underage|underaged|loli|pedo|pedophile|prepubescent|shota|underaged)\b'
+    matches = re.findall(pattern, input_text, flags=re.IGNORECASE)
+    return True if matches else False
+
 @client.event
 async def on_ready():
     global ready_to_go
@@ -205,21 +243,8 @@ async def on_message(message):
             if channelid not in bot_data:
                 print(f"Add new channel: {channelid}")
                 rtim = time.time() - 9999 #sleep first
-                wltim = 0
-                if message.clean_content.startswith("/botwhitelisttemp "):
-                    addsec = 100
-                    try:
-                        addsec = int(message.clean_content.split()[1])
-                    except Exception as e:
-                        addsec = 100
-                        pass
-                    wltim = time.time() + addsec
-
-                bot_data[channelid] = BotChannelData([],rtim,wltim)
-                if wltim > 0:
-                    await message.channel.send(f"Sire, I have temporarily added this channel to the whitelist for the next {addsec} seconds, and will now be of service here whenever you ping me.")
-                else:
-                    await message.channel.send(f"Sire, I have added this channel to the whitelist, and will now be of service here whenever you ping me.")
+                bot_data[channelid] = BotChannelData([],rtim)
+                await message.channel.send(f"Sire, I have added this channel to the whitelist, and will now be of service here whenever you ping me.")
             else:
                 await message.channel.send(f"Sire, I was already whitelisted in this channel previously. Please blacklist and then whitelist me here again.")
 
@@ -251,10 +276,14 @@ async def on_message(message):
                 except Exception as e:
                     bot_data[channelid].bot_idletime = 120
                     await message.channel.send(f"I apologize, Sire, but the command failed.")
-        elif message.clean_content.startswith("/botcoffeemode") and client.user in message.mentions:
+        elif message.clean_content.startswith("/botfilteroff") and client.user in message.mentions:
             if channelid in bot_data:
-                bot_data[channelid].bot_coffeemode = True
-                await message.channel.send(f"As you command, Sire, I am now in Coffee Mode, and will stay awake until I receive a new message.")
+                bot_data[channelid].bot_hasfilter = False
+                await message.channel.send(f"As you command, Sire, image prompts will no longer be filtered.")
+        elif message.clean_content.startswith("/botfilteron") and client.user in message.mentions:
+            if channelid in bot_data:
+                bot_data[channelid].bot_hasfilter = True
+                await message.channel.send(f"As you command, Sire, a simple text-filter will be applied to image prompts.")
 
     # gate before nonwhitelisted channels
     if channelid not in bot_data:
@@ -289,6 +318,39 @@ async def on_message(message):
             ]
             ins = random.choice(instructions)
             await message.channel.send(ins)
+    elif message.clean_content.startswith("/botdraw ") and client.user in message.mentions:
+        if channelid in bot_data:
+            if busy.acquire(blocking=False):
+                try:
+                    if currchannel.bot_hasfilter and detect_nsfw_text(message.clean_content):
+                        await message.channel.send(f"Apologies, Sire, but the image prompt filter prevents me from drawing this image.")
+                    else:
+                        await message.channel.send(f"Sire, I will attempt to draw your image. Please stand by.")
+                        async with message.channel.typing():
+                            # keep awake on any reply
+                            currchannel.bot_reply_timestamp = time.time()
+                            genimgprompt = message.clean_content
+                            genimgprompt = genimgprompt.replace('/botdraw ','')
+                            genimgprompt = genimgprompt.replace(f'@{client.user.display_name}','')
+                            genimgprompt = genimgprompt.replace(f'@{client.user.name}','').strip()
+                            print(f"Gen Img: {genimgprompt}")
+                            payload = prepare_img_payload(channelid,genimgprompt)
+                            response = requests.post(imggen_endpoint, json=payload)
+                            result = ""
+                            if response.status_code == 200:
+                                imgs = response.json()["images"]
+                                if imgs and len(imgs) > 0:
+                                    result = imgs[0]
+                            else:
+                                print(f"ERROR: response: {response}")
+                                result = ""
+                            if result:
+                                print(f"Convert and upload file...")
+                                file = discord.File(io.BytesIO(base64.b64decode(result)),filename='drawimage.png')
+                                if file:
+                                    await message.channel.send(file=file)
+                finally:
+                    busy.release()
 
 
     # handle regular chat messages
@@ -296,12 +358,6 @@ async def on_message(message):
         return
 
     currchannel = bot_data[channelid]
-
-    if currchannel.bot_whitelist_timestamp > 0 and (time.time() > currchannel.bot_whitelist_timestamp):
-        # remove from whitelist
-        if channelid in bot_data:
-            del bot_data[channelid]
-        return
 
     append_history(channelid,message.author.display_name,message.clean_content)
 
@@ -324,13 +380,12 @@ async def on_message(message):
         await message.channel.send(f"Sire, it appears that I am stuck in a conversation loop with another bot or AI. I will refrain from replying further until this situation resolves.")
         return
 
-    if not is_reply_someone_else and (secsincelastreply < currchannel.bot_idletime or currchannel.bot_coffeemode or (is_reply_to_bot or mentions_bot or contains_bot_name)):
+    if not is_reply_someone_else and (secsincelastreply < currchannel.bot_idletime or (is_reply_to_bot or mentions_bot or contains_bot_name)):
         if busy.acquire(blocking=False):
             try:
                 async with message.channel.typing():
                     # keep awake on any reply
                     currchannel.bot_reply_timestamp = time.time()
-                    currchannel.bot_coffeemode = False
                     payload = prepare_payload(channelid)
                     print(payload)
                     response = requests.post(submit_endpoint, json=payload)
