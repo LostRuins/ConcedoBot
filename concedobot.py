@@ -377,7 +377,8 @@ async def on_message(message):
     if currchannel.bot_botloopcount > 4:
         return
     elif currchannel.bot_botloopcount == 4:
-        await message.channel.send(f"Sire, it appears that I am stuck in a conversation loop with another bot or AI. I will refrain from replying further until this situation resolves.")
+        if secsincelastreply < currchannel.bot_idletime:
+            await message.channel.send(f"Sire, it appears that I am stuck in a conversation loop with another bot or AI. I will refrain from replying further until this situation resolves.")
         return
 
     if not is_reply_someone_else and (secsincelastreply < currchannel.bot_idletime or (is_reply_to_bot or mentions_bot or contains_bot_name)):
