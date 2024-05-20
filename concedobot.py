@@ -200,7 +200,6 @@ def prepare_payload(channelid):
     "rep_pen_range": 320,
     "rep_pen_slope": 0.7,
     "sampler_order": [6,0,1,3,4,2,5],
-    "memory": "",
     "min_p": 0,
     "genkey": "KCPP8888",
     "memory": memory,
