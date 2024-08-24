@@ -33,6 +33,7 @@ class BotChannelData(): #key will be the channel ID
         self.bot_hasfilter = True # apply nsfw text filter to image prompts
         self.bot_idletime = 120
         self.bot_botloopcount = 0
+        self.bot_override_memory = "" #if set, replaces default memory for this channel
 
 # bot storage
 bot_data = {} # a dict of all channels, each containing BotChannelData as value and channelid as key
@@ -185,6 +186,11 @@ def prepare_payload(channelid):
     if wi!="":
         memory += f"[{client.user.display_name} Summarized Memory Database:{wi}]\n"
     memory += intromemory
+
+    currchannel = bot_data[channelid]
+    if currchannel.bot_override_memory!="":
+        memory = currchannel.bot_override_memory
+
     prompt = concat_history(channelid)
     payload = {
     "n": 1,
@@ -283,6 +289,21 @@ async def on_message(message):
             if channelid in bot_data:
                 bot_data[channelid].bot_hasfilter = True
                 await message.channel.send(f"As you command, Sire, a simple text-filter will be applied to image prompts.")
+        elif message.clean_content.startswith("/botmemory ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
+            if channelid in bot_data:
+                try:
+                    memprompt = message.clean_content
+                    memprompt = memprompt.replace('/botmemory ','')
+                    memprompt = memprompt.replace(f'@{client.user.display_name}','')
+                    memprompt = memprompt.replace(f'@{client.user.name}','').strip()
+                    bot_data[channelid].bot_override_memory = memprompt
+                    print(f"BotMemory: {channelid} to {memprompt}")
+                    if memprompt=="":
+                        await message.channel.send(f"Bot memory override for this channel cleared.")
+                    else:
+                        await message.channel.send(f"New bot memory override set for this channel.")
+                except Exception as e:
+                    await message.channel.send(f"I apologize, Sire, but the command failed.")
 
     # gate before nonwhitelisted channels
     if channelid not in bot_data:

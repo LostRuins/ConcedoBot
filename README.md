@@ -17,6 +17,7 @@ Admin Commands:
 /botidletime [integer] @YourBotName - Set number of seconds before bot enters idle mode
 /botfilteron @YourBotName - Enables the image prompt filter
 /botfilteroff @YourBotName - Disables the image prompt filter
+/botmemory @YourBotName [prompt] - Overrides the bot memory for this channel
 ```
 
 General Commands:
