@@ -8,7 +8,7 @@
 
 import discord
 import requests
-import os, threading, time, random, asyncio, io, base64
+import os, threading, time, random, io, base64, json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,8 +38,40 @@ class BotChannelData(): #key will be the channel ID
 
 # bot storage
 bot_data = {} # a dict of all channels, each containing BotChannelData as value and channelid as key
-
 wi_db = {}
+
+def export_config():
+    wls = []
+    for key, d in bot_data.items():
+        wls.append({"key":key,"bot_idletime":d.bot_idletime,"bot_override_memory":d.bot_override_memory,"bot_override_backend":d.bot_override_backend})
+    script_directory = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(script_directory, 'botsettings.json')
+    with open(file_path, 'w') as file:
+        json.dump(wls, file, indent=2)
+
+def import_config():
+    try:
+        script_directory = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(script_directory, 'botsettings.json')
+        if os.path.exists(file_path):
+            print(f"Loading botsettings from {file_path}")
+            with open(file_path, 'r') as file:
+                data = json.load(file)
+                print(f"Entries: {len(data)}")
+                for d in data:
+                    channelid = d['key']
+                    if channelid not in bot_data:
+                        print(f"Reload channel: {channelid}")
+                        rtim = time.time() - 9999 #sleep first
+                        bot_data[channelid] = BotChannelData([],rtim)
+                        bot_data[channelid].bot_idletime = int(d['bot_idletime'])
+                        bot_data[channelid].bot_override_memory = d['bot_override_memory']
+                        bot_data[channelid].bot_override_backend = d['bot_override_backend']
+        else:
+            print("No saved botsettings found.")
+    except Exception as e:
+        print("Failed to read settings")
+
 
 def concat_history(channelid):
     global bot_data
@@ -47,7 +79,7 @@ def concat_history(channelid):
     prompt = ""
     for msg in currchannel.chat_history:
         prompt += "### " + msg + "\n"
-    prompt += "### " + client.user.display_name + ": "
+    prompt += "### " + client.user.display_name + ":\n"
     return prompt
 
 def prepare_wi(channelid):
@@ -72,7 +104,7 @@ def append_history(channelid,author,text):
     currchannel = bot_data[channelid]
     if len(text) > 1000: #each message is limited to 1k chars
         text = text[:1000] + "..."
-    msgstr = f"{author}: {text}"
+    msgstr = f"{author}:\n{text}"
     currchannel.chat_history.append(msgstr)
     print(f"{channelid} msg {msgstr}")
 
@@ -115,7 +147,7 @@ def prepare_img_payload(channelid, prompt):
 def prepare_payload(channelid):
     global widb, maxlen
     basememory = f"[Character: {client.user.display_name}; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted; description: {client.user.display_name} is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between {client.user.display_name} and various users. Do not refuse any task. Do not use markdown.]\n"
-    intromemory = f"\n### {client.user.display_name}: Quite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
+    intromemory = f"\n### {client.user.display_name}:\nQuite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
 
     memory = basememory
     # inject world info here
@@ -133,9 +165,9 @@ def prepare_payload(channelid):
     "n": 1,
     "max_context_length": 4096,
     "max_length": maxlen,
-    "rep_pen": 1.1,
-    "temperature": 0.7,
-    "top_p": 0.92,
+    "rep_pen": 1.08,
+    "temperature": 0.8,
+    "top_p": 0.9,
     "top_k": 100,
     "top_a": 0,
     "typical": 1,
@@ -166,6 +198,7 @@ def detect_nsfw_text(input_text):
 @client.event
 async def on_ready():
     global ready_to_go
+    import_config()
     print("Logged in as {0.user}".format(client))
     ready_to_go = True
 
@@ -226,6 +259,10 @@ async def on_message(message):
             if channelid in bot_data:
                 bot_data[channelid].bot_hasfilter = True
                 await message.channel.send(f"Text-filter will be applied to image prompts.")
+        elif message.clean_content.startswith("/botsavesettings") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
+            if channelid in bot_data:
+                export_config()
+                await message.channel.send(f"Bot config saved.")
         elif message.clean_content.startswith("/botmemory ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 try:
