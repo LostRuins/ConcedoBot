@@ -165,7 +165,7 @@ def prepare_payload(channelid):
     "n": 1,
     "max_context_length": 4096,
     "max_length": maxlen,
-    "rep_pen": 1.08,
+    "rep_pen": 1.07,
     "temperature": 0.8,
     "top_p": 0.9,
     "top_k": 100,
@@ -182,7 +182,8 @@ def prepare_payload(channelid):
     "quiet": True,
     "trim_stop": True,
     "stop_sequence": [
-        "\n###"
+        "\n###",
+        "### "
     ],
     "use_default_badwordsids": False
     }
