@@ -10,6 +10,7 @@ import discord
 import requests
 import os, threading, time, random, io, base64, json
 from dotenv import load_dotenv
+import urllib
 
 load_dotenv()
 
@@ -190,6 +191,38 @@ def prepare_payload(channelid):
 
     return payload
 
+def prepare_vision_payload(b64img):
+    global maxlen
+    payload = {
+    "n": 1,
+    "max_context_length": 4096,
+    "max_length": maxlen,
+    "rep_pen": 1.07,
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "top_k": 100,
+    "top_a": 0,
+    "typical": 1,
+    "tfs": 1,
+    "rep_pen_range": 320,
+    "rep_pen_slope": 0.7,
+    "sampler_order": [6,0,1,3,4,2,5],
+    "min_p": 0,
+    "genkey": "KCPP8888",
+    "memory": "",
+    "images": [b64img],
+    "prompt": "### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found.\n\n### Response:\n",
+    "quiet": True,
+    "trim_stop": True,
+    "stop_sequence": [
+        "\n###",
+        "### "
+    ],
+    "use_default_badwordsids": False
+    }
+
+    return payload
+
 def detect_nsfw_text(input_text):
     import re
     pattern = r'\b(cock|ahegao|hentai|uncensored|lewd|cocks|deepthroat|deepthroating|dick|dicks|cumshot|lesbian|fuck|fucked|fucking|sperm|naked|nipples|tits|boobs|breasts|boob|breast|topless|ass|butt|fingering|masturbate|masturbating|bitch|blowjob|pussy|piss|asshole|dildo|dildos|vibrator|erection|foreskin|handjob|nude|penis|porn|vibrator|virgin|vagina|vulva|threesome|orgy|bdsm|hickey|condom|testicles|anal|bareback|bukkake|creampie|stripper|strap-on|missionary|clitoris|clit|clitty|cowgirl|fleshlight|sex|buttplug|milf|oral|sucking|bondage|orgasm|scissoring|railed|slut|sluts|slutty|cumming|cunt|faggot|sissy|anal|anus|cum|semen|scat|nsfw|xxx|explicit|erotic|horny|aroused|jizz|moan|rape|raped|raping|throbbing|humping|underage|underaged|loli|pedo|pedophile|prepubescent|shota|underaged)\b'
@@ -324,6 +357,47 @@ async def on_message(message):
             ]
             ins = random.choice(instructions)
             await message.channel.send(ins)
+    elif message.clean_content.startswith("/botdescribe ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
+        if channelid in bot_data:
+            uploadedimg = None
+            try:
+                if message.attachments:
+                    for attachment in message.attachments:
+                        if attachment.content_type and 'image' in attachment.content_type:
+                            print(f"Fetching image: {attachment.url}")
+                            req = urllib.request.Request(attachment.url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'})
+                            with urllib.request.urlopen(req, timeout=30) as response:
+                                temp = response.read()
+                                uploadedimg = base64.b64encode(temp).decode('utf-8')
+                                print("Image fetched")
+            except Exception as e:
+                print(f"Error: {e}")
+                pass
+            if busy.acquire(blocking=False):
+                try:
+                    if not uploadedimg:
+                        await message.channel.send("Sorry, no image was uploaded.")
+                    else:
+                        await message.channel.send("Attempting to describe the provided image, please wait.")
+                        async with message.channel.typing():
+                            currchannel.bot_reply_timestamp = time.time()
+                            payload = prepare_vision_payload(uploadedimg)
+                            print(payload)
+                            sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+                            response = requests.post(sep, json=payload)
+                            result = ""
+                            if response.status_code == 200:
+                                result = response.json()["results"][0]["text"]
+                            else:
+                                print(f"ERROR: response: {response}")
+                                result = ""
+                            #no need to clean result, if all formatting goes well
+                            if result!="":
+                                await message.channel.send(f"Image Description: {result}")
+                            else:
+                                await message.channel.send("Sorry, the image transcription failed!")
+                finally:
+                    busy.release()
     elif message.clean_content.startswith("/botdraw ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
         if channelid in bot_data:
             if busy.acquire(blocking=False):
@@ -384,7 +458,7 @@ async def on_message(message):
         return
     elif currchannel.bot_botloopcount == 4:
         if secsincelastreply < currchannel.bot_idletime:
-            await message.channel.send(f"It appears that I am stuck in a conversation loop with another bot or AI. I will refrain from replying further until this situation resolves.")
+            await message.channel.send("It appears that I am stuck in a conversation loop with another bot or AI. I will refrain from replying further until this situation resolves.")
         return
 
     if not is_reply_someone_else and (secsincelastreply < currchannel.bot_idletime or (is_reply_to_bot or mentions_bot or contains_bot_name)):

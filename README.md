@@ -20,6 +20,7 @@ Admin Commands:
 /botmemory @YourBotName [prompt] - Overrides the bot memory for this channel
 /botbackend @YourBotName [kcpp_base_url] - Overrides the kcpp backend used by the bot in a channel
 /botsavesettings @YourBotName - Saves whitelisted channels and bot memories to disk. Does not save chat history.
+/botdescribe @YourBotName - Describes an image uploaded by a user.
 ```
 
 General Commands:
