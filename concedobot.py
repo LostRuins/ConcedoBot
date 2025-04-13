@@ -83,6 +83,17 @@ def concat_history(channelid):
     prompt += "### " + client.user.display_name + ":\n"
     return prompt
 
+def get_stoplist(channelid):
+    global bot_data
+    currchannel = bot_data[channelid]
+    display_names = set()
+    for msg in currchannel.chat_history:
+        if ":" in msg:
+            name = msg.split(":")[0].strip()
+            if name and len(name)>1 and len(name)<32:
+                display_names.add("\n"+name+":")
+    return list(display_names)
+
 def prepare_wi(channelid):
     global bot_data,wi_db
     currchannel = bot_data[channelid]
@@ -162,6 +173,9 @@ def prepare_payload(channelid):
         memory = currchannel.bot_override_memory
 
     prompt = concat_history(channelid)
+    basestops = ["\n###", "### "]
+    custom_name_stops = get_stoplist(channelid)
+    stops = basestops + custom_name_stops
     payload = {
     "n": 1,
     "max_context_length": 4096,
@@ -182,10 +196,7 @@ def prepare_payload(channelid):
     "prompt": prompt,
     "quiet": True,
     "trim_stop": True,
-    "stop_sequence": [
-        "\n###",
-        "### "
-    ],
+    "stop_sequence": stops,
     "use_default_badwordsids": False
     }
 
