@@ -233,7 +233,24 @@ def prepare_payload(channelid):
     return payload
 
 def prepare_vision_payload(b64img):
-    global maxlen
+    global maxlen, args
+    try:
+        script_directory = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(script_directory, args.char)  # Load from arg
+        with open(file_path, 'r') as f:
+            character_data = json.load(f)
+        print(f"Loaded character details from {args.char}")
+    except FileNotFoundError:
+        print("Error: character details file not found. Using default values.")
+        character_data = {
+            "name": "ConcedoBot",
+            "species": "AI powered digital butler",
+            "role": "assistant",
+            "personality": "helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted",
+            "description": "ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.",
+            "intromemory": "\n### ConcedoBot:\nQuite well met, Sire.\nI am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence.\nShould you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
+        }
+    vision_prompt = f"### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found. Describe the image as if you are {character_data['description']}. Your personality should be {character_data['personality']}.\n\n### Response:\n"
     payload = {
     "n": 1,
     "max_length": maxlen,
@@ -252,7 +269,7 @@ def prepare_vision_payload(b64img):
     "genkey": "KCPP8888",
     "memory": "",
     "images": [b64img],
-    "prompt": "### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found.\n\n### Response:\n",
+    "prompt": vision_prompt,
     "quiet": True,
     "trim_stop": True,
     "stop_sequence": [
