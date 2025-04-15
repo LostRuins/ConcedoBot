@@ -25,7 +25,7 @@ busy = threading.Lock() # a global flag, never handle more than 1 request at a t
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
 imggen_endpoint = os.getenv("KAI_ENDPOINT") + "/sdapi/v1/txt2img"
 admin_name = os.getenv("ADMIN_NAME")
-maxlen = 300
+maxlen = 360
 
 class BotChannelData(): #key will be the channel ID
     def __init__(self, chat_history, bot_reply_timestamp):
@@ -120,7 +120,7 @@ def append_history(channelid,author,text):
     currchannel.chat_history.append(msgstr)
     print(f"{channelid} msg {msgstr}")
 
-    if len(currchannel.chat_history) > 20: #limited to last 20 msgs
+    if len(currchannel.chat_history) > 25: #limited to last 25 msgs
         currchannel.chat_history.pop(0)
 
 def prepare_img_payload(channelid, prompt):
@@ -178,7 +178,6 @@ def prepare_payload(channelid):
     stops = basestops + custom_name_stops
     payload = {
     "n": 1,
-    "max_context_length": 4096,
     "max_length": maxlen,
     "rep_pen": 1.07,
     "temperature": 0.8,
@@ -206,7 +205,6 @@ def prepare_vision_payload(b64img):
     global maxlen
     payload = {
     "n": 1,
-    "max_context_length": 4096,
     "max_length": maxlen,
     "rep_pen": 1.07,
     "temperature": 0.8,
@@ -404,6 +402,7 @@ async def on_message(message):
                                 result = ""
                             #no need to clean result, if all formatting goes well
                             if result!="":
+                                append_history(channelid,message.author.display_name,f"(Attached an Image: {result})")
                                 await message.channel.send(f"Image Description: {result}")
                             else:
                                 await message.channel.send("Sorry, the image transcription failed!")
