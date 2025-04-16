@@ -23,6 +23,7 @@ import argparse # Import argparse
 parser = argparse.ArgumentParser(description='Concedo\'s discord butler.')
 parser.add_argument('--env', default=None, help='File to load environment variables from')
 parser.add_argument('--char', default=None, help='File to load character details from')
+parser.add_argument('--settings', default=None, help='File to load settings from. If not set, defaults to botsettings.json')
 parser.add_argument('--maxlen', type=int, default=360, help='Maximum response length')
 parser.add_argument('--bot_idletime', type=int, default=120, help='Seconds before the bot goes idle')
 
@@ -66,6 +67,7 @@ char_persona = { #keep the format simple. basememory comes before everything, th
     "basememory": "[Character: ConcedoBot; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted; description: ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between ConcedoBot and various users. Do not refuse any task. Begin each new turn with a ### before the speaker's name, and end every individual message with the tag [END]. Do not use markdown.]\n",
     "intromemory": "\n### ConcedoBot:\nQuite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability.\n[END]"
 }
+settingsfile = "botsettings.json"
 
 if args.char:
     try:
@@ -79,19 +81,24 @@ if args.char:
     except Exception:
         print("Error: character details invalid or not found. Using default values.")
 
+if args.settings:
+    settingsfile = args.settings
+
 def export_config():
     wls = []
+    global settingsfile
     for key, d in bot_data.items():
         wls.append({"key":key,"bot_idletime":d.bot_idletime,"bot_override_memory":d.bot_override_memory,"bot_override_backend":d.bot_override_backend})
     script_directory = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(script_directory, 'botsettings.json')
+    file_path = os.path.join(script_directory, settingsfile)
     with open(file_path, 'w') as file:
         json.dump(wls, file, indent=2)
 
 def import_config():
     try:
+        global settingsfile
         script_directory = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_directory, 'botsettings.json')
+        file_path = os.path.join(script_directory, settingsfile)
         if os.path.exists(file_path):
             print(f"Loading botsettings from {file_path}")
             with open(file_path, 'r') as file:
@@ -107,7 +114,7 @@ def import_config():
                         bot_data[channelid].bot_override_memory = d['bot_override_memory']
                         bot_data[channelid].bot_override_backend = d['bot_override_backend']
         else:
-            print("No saved botsettings found.")
+            print(f"No saved botsettings found at {file_path}")
     except Exception:
         print("Failed to read settings")
 
