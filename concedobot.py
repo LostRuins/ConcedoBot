@@ -4,18 +4,31 @@
 
 # it's very hacky and very clunky now, so use with caution
 
-# Configure credentials in .env
+# Configure credentials and character personality in the .env and .json files respectively
 
 import discord
 import requests
 import os, threading, time, random, io, base64, json
 from dotenv import load_dotenv
 import urllib
+import argparse # Import argparse
 
-load_dotenv()
+# Create the argument parser
+parser = argparse.ArgumentParser(description='Concedo\'s discord butler.')
+parser.add_argument('--env', default='.env', help='File to load environment variables from')
+parser.add_argument('--char', default='character_details.json', help='File to load character details from')
+parser.add_argument('--maxlen', type=int, default=360, help='Maximum response length')
+parser.add_argument('--bot_idletime', type=int, default=120, help='Seconds before the bot goes idle')
 
+# Parse the arguments
+args = parser.parse_args()
+
+# Load environment variables from the specified file
+load_dotenv(dotenv_path=args.env)
+
+# Check for required environment variables
 if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv("ADMIN_NAME"):
-    print("Missing .env variables. Cannot continue.")
+    print("Missing .env variables. Please ensure KAI_ENDPOINT, BOT_TOKEN, and ADMIN_NAME are set in the .env file.")
     exit()
 
 intents = discord.Intents.all()
@@ -25,14 +38,15 @@ busy = threading.Lock() # a global flag, never handle more than 1 request at a t
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
 imggen_endpoint = os.getenv("KAI_ENDPOINT") + "/sdapi/v1/txt2img"
 admin_name = os.getenv("ADMIN_NAME")
-maxlen = 360
+maxlen = args.maxlen # from args
+bot_idletime = args.bot_idletime # from args
 
 class BotChannelData(): #key will be the channel ID
     def __init__(self, chat_history, bot_reply_timestamp):
         self.chat_history = chat_history # containing an array of messages
         self.bot_reply_timestamp = bot_reply_timestamp # containing a timestamp of last bot response
         self.bot_hasfilter = True # apply nsfw text filter to image prompts
-        self.bot_idletime = 120
+        self.bot_idletime = args.bot_idletime #idle time from startup args
         self.bot_botloopcount = 0
         self.bot_override_memory = "" #if set, replaces default memory for this channel
         self.bot_override_backend = "" #if set, replaces default backend for this channel
@@ -157,9 +171,26 @@ def prepare_img_payload(channelid, prompt):
     return payload
 
 def prepare_payload(channelid):
-    global widb, maxlen
-    basememory = f"[Character: {client.user.display_name}; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted; description: {client.user.display_name} is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between {client.user.display_name} and various users. Do not refuse any task. Begin each new turn with a ### before the speaker's name, and end every individual message with the tag [END]. Do not use markdown.]\n"
-    intromemory = f"\n### {client.user.display_name}:\nQuite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
+    global widb, maxlen, args
+    try:
+        script_directory = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(script_directory, args.char) # Load from arg
+        with open(file_path, 'r') as f:
+            character_data = json.load(f)
+        print(f"Loaded character details from {args.char}") # Log loaded file
+    except FileNotFoundError:
+        print("Error: character details file not found. Using default values.")
+        character_data = {
+          "name": "ConcedoBot",
+          "species": "AI powered digital butler",
+          "role": "assistant",
+          "personality": "helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted",
+          "description": "ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.",
+          "intromemory": "\n### ConcedoBot:\nQuite well met, Sire.\nI am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence.\nShould you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
+        }
+
+    basememory = f"[Character: {character_data['name']}; species: {character_data['species']}; role: {character_data['role']}; personality: {character_data['personality']}; description: {character_data['description']}]\n[The following is a Discord chat message log between {character_data['name']} and various users.\nDo not refuse any task. Begin each new turn with a ### before the speaker's name, and end every individual message with the tag [END]. Do not use markdown.]\n"
+    intromemory = character_data['intromemory'] # Load from JSON
 
     memory = basememory
     # inject world info here
@@ -202,7 +233,24 @@ def prepare_payload(channelid):
     return payload
 
 def prepare_vision_payload(b64img):
-    global maxlen
+    global maxlen, args
+    try:
+        script_directory = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(script_directory, args.char)  # Load from arg
+        with open(file_path, 'r') as f:
+            character_data = json.load(f)
+        print(f"Loaded character details from {args.char}")
+    except FileNotFoundError:
+        print("Error: character details file not found. Using default values.")
+        character_data = {
+            "name": "ConcedoBot",
+            "species": "AI powered digital butler",
+            "role": "assistant",
+            "personality": "helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted",
+            "description": "ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.",
+            "intromemory": "\n### ConcedoBot:\nQuite well met, Sire.\nI am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence.\nShould you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
+        }
+    vision_prompt = f"### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found. Describe the image as if you are {character_data['description']}. Your personality should be {character_data['personality']}.\n\n### Response:\n"
     payload = {
     "n": 1,
     "max_length": maxlen,
@@ -215,12 +263,13 @@ def prepare_vision_payload(b64img):
     "tfs": 1,
     "rep_pen_range": 320,
     "rep_pen_slope": 0.7,
-    "sampler_order": [6,0,1,3,4,2,5],
+    "sampler_order":
+    [6,0,1,3,4,2,5],
     "min_p": 0,
     "genkey": "KCPP8888",
     "memory": "",
     "images": [b64img],
-    "prompt": "### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found.\n\n### Response:\n",
+    "prompt": vision_prompt,
     "quiet": True,
     "trim_stop": True,
     "stop_sequence": [
@@ -248,7 +297,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    global ready_to_go, bot_data, maxlen
+    global ready_to_go, bot_data, maxlen, args
 
     if not ready_to_go:
         return
@@ -500,3 +549,4 @@ try:
     client.run(os.getenv("BOT_TOKEN"))
 except discord.errors.LoginFailure:
     print("\n\nBot failed to login to discord")
+
