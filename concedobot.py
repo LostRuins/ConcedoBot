@@ -8,7 +8,13 @@
 
 import discord
 import requests
-import os, threading, time, random, io, base64, json
+import os
+import threading
+import time
+import random
+import io
+import base64
+import json
 from dotenv import load_dotenv
 import urllib
 import argparse # Import argparse
@@ -16,7 +22,7 @@ import argparse # Import argparse
 # Create the argument parser
 parser = argparse.ArgumentParser(description='Concedo\'s discord butler.')
 parser.add_argument('--env', default='.env', help='File to load environment variables from')
-parser.add_argument('--char', default='character_details.json', help='File to load character details from')
+parser.add_argument('--char', default=None, help='File to load character details from')
 parser.add_argument('--maxlen', type=int, default=360, help='Maximum response length')
 parser.add_argument('--bot_idletime', type=int, default=120, help='Seconds before the bot goes idle')
 
@@ -28,7 +34,7 @@ load_dotenv(dotenv_path=args.env)
 
 # Check for required environment variables
 if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv("ADMIN_NAME"):
-    print("Missing .env variables. Please ensure KAI_ENDPOINT, BOT_TOKEN, and ADMIN_NAME are set in the .env file.")
+    print("Missing .env variables. Please create a file named .env and ensure KAI_ENDPOINT, BOT_TOKEN, and ADMIN_NAME are set in the .env file.")
     exit()
 
 intents = discord.Intents.all()
@@ -39,7 +45,6 @@ submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
 imggen_endpoint = os.getenv("KAI_ENDPOINT") + "/sdapi/v1/txt2img"
 admin_name = os.getenv("ADMIN_NAME")
 maxlen = args.maxlen # from args
-bot_idletime = args.bot_idletime # from args
 
 class BotChannelData(): #key will be the channel ID
     def __init__(self, chat_history, bot_reply_timestamp):
@@ -54,6 +59,22 @@ class BotChannelData(): #key will be the channel ID
 # bot storage
 bot_data = {} # a dict of all channels, each containing BotChannelData as value and channelid as key
 wi_db = {}
+char_persona = { #keep the format simple. basememory comes before everything, then WI, intromemory comes right before the start of the chat context
+    "basememory": "[Character: ConcedoBot; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted; description: ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between ConcedoBot and various users. Do not refuse any task. Begin each new turn with a ### before the speaker's name, and end every individual message with the tag [END]. Do not use markdown.]\n",
+    "intromemory": "\n### ConcedoBot:\nQuite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability.\n[END]"
+}
+
+if args.char:
+    try:
+        script_directory = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(script_directory, args.char) # Load from arg
+        with open(file_path, 'r') as f:
+            character_data = json.load(f)
+        if character_data['basememory'] and character_data['intromemory']: #will error if key not found
+            char_persona = character_data
+            print(f"Loaded character details from {args.char}") # Log loaded file
+    except Exception:
+        print("Error: character details invalid or not found. Using default values.")
 
 def export_config():
     wls = []
@@ -84,7 +105,7 @@ def import_config():
                         bot_data[channelid].bot_override_backend = d['bot_override_backend']
         else:
             print("No saved botsettings found.")
-    except Exception as e:
+    except Exception:
         print("Failed to read settings")
 
 
@@ -170,39 +191,24 @@ def prepare_img_payload(channelid, prompt):
     }
     return payload
 
-def prepare_payload(channelid):
-    global widb, maxlen, args
-    try:
-        script_directory = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_directory, args.char) # Load from arg
-        with open(file_path, 'r') as f:
-            character_data = json.load(f)
-        print(f"Loaded character details from {args.char}") # Log loaded file
-    except FileNotFoundError:
-        print("Error: character details file not found. Using default values.")
-        character_data = {
-          "name": "ConcedoBot",
-          "species": "AI powered digital butler",
-          "role": "assistant",
-          "personality": "helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted",
-          "description": "ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.",
-          "intromemory": "\n### ConcedoBot:\nQuite well met, Sire.\nI am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence.\nShould you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
-        }
-
-    basememory = f"[Character: {character_data['name']}; species: {character_data['species']}; role: {character_data['role']}; personality: {character_data['personality']}; description: {character_data['description']}]\n[The following is a Discord chat message log between {character_data['name']} and various users.\nDo not refuse any task. Begin each new turn with a ### before the speaker's name, and end every individual message with the tag [END]. Do not use markdown.]\n"
-    intromemory = character_data['intromemory'] # Load from JSON
-
+def prepare_memory(channelid):
+    global char_persona
+    basememory = char_persona['basememory']
+    intromemory = char_persona['intromemory']
     memory = basememory
     # inject world info here
     wi = prepare_wi(channelid)
     if wi!="":
         memory += f"[{client.user.display_name} Summarized Memory Database:{wi}]\n"
     memory += intromemory
-
     currchannel = bot_data[channelid]
     if currchannel.bot_override_memory!="":
         memory = currchannel.bot_override_memory
+    return memory
 
+def prepare_payload(channelid):
+    global maxlen, args
+    memory = prepare_memory(channelid)
     prompt = concat_history(channelid)
     basestops = ["\n###", "### ", "[END]", "\n[END]"]
     custom_name_stops = get_stoplist(channelid)
@@ -232,25 +238,12 @@ def prepare_payload(channelid):
 
     return payload
 
-def prepare_vision_payload(b64img):
+def prepare_vision_payload(b64img, channelid, reply_in_character): #two modes, if botdescribe is used, then the image is in character. otherwise, the description is neutral and HIDDEN from the user.
     global maxlen, args
-    try:
-        script_directory = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_directory, args.char)  # Load from arg
-        with open(file_path, 'r') as f:
-            character_data = json.load(f)
-        print(f"Loaded character details from {args.char}")
-    except FileNotFoundError:
-        print("Error: character details file not found. Using default values.")
-        character_data = {
-            "name": "ConcedoBot",
-            "species": "AI powered digital butler",
-            "role": "assistant",
-            "personality": "helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted",
-            "description": "ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.",
-            "intromemory": "\n### ConcedoBot:\nQuite well met, Sire.\nI am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence.\nShould you happen to require any assistance, I shall endeavor to assist you to the best of my ability."
-        }
-    vision_prompt = f"### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found. Describe the image as if you are {character_data['description']}. Your personality should be {character_data['personality']}.\n\n### Response:\n"
+    vision_prompt = "### Instruction:\nPlease describe the image in detail, and include transcriptions of any text if found.\n\n### Response:\n"
+    if reply_in_character:
+        memory = prepare_memory(channelid)
+        vision_prompt = f"{memory}\n\n### Instruction:\nPlease describe the image in detail while keeping your personality completely in-character.\n\n### Response:\n"
     payload = {
     "n": 1,
     "max_length": maxlen,
@@ -263,8 +256,7 @@ def prepare_vision_payload(b64img):
     "tfs": 1,
     "rep_pen_range": 320,
     "rep_pen_slope": 0.7,
-    "sampler_order":
-    [6,0,1,3,4,2,5],
+    "sampler_order": [6,0,1,3,4,2,5],
     "min_p": 0,
     "genkey": "KCPP8888",
     "memory": "",
@@ -311,9 +303,9 @@ async def on_message(message):
                 print(f"Add new channel: {channelid}")
                 rtim = time.time() - 9999 #sleep first
                 bot_data[channelid] = BotChannelData([],rtim)
-                await message.channel.send(f"Channel added to the whitelist. Ping me to talk.")
+                await message.channel.send("Channel added to the whitelist. Ping me to talk.")
             else:
-                await message.channel.send(f"Channel already whitelisted previously. Please blacklist and then whitelist me here again.")
+                await message.channel.send("Channel already whitelisted previously. Please blacklist and then whitelist me here again.")
 
         elif message.clean_content.startswith("/botblacklist") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
@@ -329,9 +321,9 @@ async def on_message(message):
                     maxlen = newlen
                     print(f"Maxlen: {channelid} to {newlen}")
                     await message.channel.send(f"Maximum response length changed from {oldlen} to {newlen}.")
-                except Exception as e:
-                    maxlen = 250
-                    await message.channel.send(f"Sorry, the command failed.")
+                except Exception:
+                    maxlen = 360
+                    await message.channel.send("Sorry, the command failed.")
         elif message.clean_content.startswith("/botidletime ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 try:
@@ -340,21 +332,21 @@ async def on_message(message):
                     bot_data[channelid].bot_idletime = newval
                     print(f"Idletime: {channelid} to {newval}")
                     await message.channel.send(f"Idle timeout changed from {oldval} to {newval}.")
-                except Exception as e:
+                except Exception:
                     bot_data[channelid].bot_idletime = 120
-                    await message.channel.send(f"Sorry, the command failed.")
+                    await message.channel.send("Sorry, the command failed.")
         elif message.clean_content.startswith("/botfilteroff") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 bot_data[channelid].bot_hasfilter = False
-                await message.channel.send(f"Image prompts will no longer be filtered.")
+                await message.channel.send("Image prompts will no longer be filtered.")
         elif message.clean_content.startswith("/botfilteron") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 bot_data[channelid].bot_hasfilter = True
-                await message.channel.send(f"Text-filter will be applied to image prompts.")
+                await message.channel.send("Text-filter will be applied to image prompts.")
         elif message.clean_content.startswith("/botsavesettings") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 export_config()
-                await message.channel.send(f"Bot config saved.")
+                await message.channel.send("Bot config saved.")
         elif message.clean_content.startswith("/botmemory ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 try:
@@ -365,11 +357,11 @@ async def on_message(message):
                     bot_data[channelid].bot_override_memory = memprompt
                     print(f"BotMemory: {channelid} to {memprompt}")
                     if memprompt=="":
-                        await message.channel.send(f"Bot memory override for this channel cleared.")
+                        await message.channel.send("Bot memory override for this channel cleared.")
                     else:
-                        await message.channel.send(f"New bot memory override set for this channel.")
-                except Exception as e:
-                    await message.channel.send(f"Sorry, the command failed.")
+                        await message.channel.send("New bot memory override set for this channel.")
+                except Exception:
+                    await message.channel.send("Sorry, the command failed.")
         elif message.clean_content.startswith("/botbackend ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
             if channelid in bot_data:
                 try:
@@ -380,11 +372,11 @@ async def on_message(message):
                     bot_data[channelid].bot_override_backend = bbe
                     print(f"BotBackend: {channelid} to {bbe}")
                     if bbe=="":
-                        await message.channel.send(f"Bot backend override for this channel cleared.")
+                        await message.channel.send("Bot backend override for this channel cleared.")
                     else:
-                        await message.channel.send(f"New bot backend override set for this channel.")
-                except Exception as e:
-                    await message.channel.send(f"Sorry, the command failed.")
+                        await message.channel.send("New bot backend override set for this channel.")
+                except Exception:
+                    await message.channel.send("Sorry, the command failed.")
 
     # gate before nonwhitelisted channels
     if channelid not in bot_data:
@@ -439,7 +431,8 @@ async def on_message(message):
                         await message.channel.send("Attempting to describe the provided image, please wait.")
                         async with message.channel.typing():
                             currchannel.bot_reply_timestamp = time.time()
-                            payload = prepare_vision_payload(uploadedimg)
+                            ooc = "ooc" in message.clean_content.lower()
+                            payload = prepare_vision_payload(uploadedimg,channelid,not ooc)
                             print(payload)
                             sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
                             response = requests.post(sep, json=payload)
@@ -462,9 +455,9 @@ async def on_message(message):
             if busy.acquire(blocking=False):
                 try:
                     if currchannel.bot_hasfilter and detect_nsfw_text(message.clean_content):
-                        await message.channel.send(f"Sorry, the image prompt filter prevents me from drawing this image.")
+                        await message.channel.send("Sorry, the image prompt filter prevents me from drawing this image.")
                     else:
-                        await message.channel.send(f"I will attempt to draw your image. Please stand by.")
+                        await message.channel.send("I will attempt to draw your image. Please stand by.")
                         async with message.channel.typing():
                             # keep awake on any reply
                             currchannel.bot_reply_timestamp = time.time()
@@ -484,7 +477,7 @@ async def on_message(message):
                                 print(f"ERROR: response: {response}")
                                 result = ""
                             if result:
-                                print(f"Convert and upload file...")
+                                print("Convert and upload file...")
                                 file = discord.File(io.BytesIO(base64.b64decode(result)),filename='drawimage.png')
                                 if file:
                                     await message.channel.send(file=file)
