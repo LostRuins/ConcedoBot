@@ -21,7 +21,7 @@ import argparse # Import argparse
 
 # Create the argument parser
 parser = argparse.ArgumentParser(description='Concedo\'s discord butler.')
-parser.add_argument('--env', default='.env', help='File to load environment variables from')
+parser.add_argument('--env', default=None, help='File to load environment variables from')
 parser.add_argument('--char', default=None, help='File to load character details from')
 parser.add_argument('--maxlen', type=int, default=360, help='Maximum response length')
 parser.add_argument('--bot_idletime', type=int, default=120, help='Seconds before the bot goes idle')
@@ -30,7 +30,10 @@ parser.add_argument('--bot_idletime', type=int, default=120, help='Seconds befor
 args = parser.parse_args()
 
 # Load environment variables from the specified file
-load_dotenv(dotenv_path=args.env)
+if args.env:
+    load_dotenv(dotenv_path=args.env)
+else:
+    load_dotenv()
 
 # Check for required environment variables
 if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv("ADMIN_NAME"):
