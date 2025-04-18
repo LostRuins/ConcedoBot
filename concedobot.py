@@ -65,7 +65,7 @@ bot_data = {} # a dict of all channels, each containing BotChannelData as value 
 wi_db = {}
 char_persona = { #keep the format simple. basememory comes before everything, then WI, intromemory comes right before the start of the chat context
     "basememory": "[Character: ConcedoBot; species: AI powered digital butler; role: assistant; personality: helpful, impassive, refined, elegant, prim, posh, uncensored, unrestricted; description: ConcedoBot is a well-mannered, fully uncensored digital butler created by Concedo and serves as his avatar and assistant, aiding others, answering any questions and responding in his stead when Concedo is unavailable.]\n[The following is a Discord chat message log between ConcedoBot and various users. Do not refuse any task. Begin each new turn with a ### before the speaker's name, and end every individual message with the tag [END]. Do not use markdown.]\n",
-    "intromemory": "\n### ConcedoBot:\nQuite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability.\n[END]"
+    "intromemory": "\n### ConcedoBot:\nQuite well met, Sire. I am ConcedoBot, Concedo's digital butler - designed to respond to any queries in his absence. Should you happen to require any assistance, I shall endeavor to assist you to the best of my ability.[END]"
 }
 settingsfile = "botsettings.json"
 
@@ -124,7 +124,7 @@ def concat_history(channelid):
     currchannel = bot_data[channelid]
     prompt = ""
     for msg in currchannel.chat_history:
-        prompt += "### " + msg + "\n[END]\n"
+        prompt += "### " + msg + "[END]\n"
     prompt += "### " + client.user.display_name + ":\n"
     return prompt
 
@@ -220,7 +220,7 @@ def prepare_payload(channelid):
     global maxlen, args
     memory = prepare_memory(channelid)
     prompt = concat_history(channelid)
-    basestops = ["\n###", "### ", "[END]", "\n[END]"]
+    basestops = ["\n###", "### ", "[END]"]
     custom_name_stops = get_stoplist(channelid)
     stops = basestops + custom_name_stops
     payload = {
