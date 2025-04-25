@@ -441,8 +441,8 @@ async def on_message(message):
                         await message.channel.send("Attempting to describe the provided image, please wait.")
                         async with message.channel.typing():
                             currchannel.bot_reply_timestamp = time.time()
-                            ooc = "ooc" in message.clean_content.lower()
-                            payload = prepare_vision_payload(uploadedimg,channelid,not ooc)
+                            rp = "roleplay" in message.clean_content.lower()
+                            payload = prepare_vision_payload(uploadedimg,channelid,rp)
                             print(payload)
                             sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
                             response = requests.post(sep, json=payload)
