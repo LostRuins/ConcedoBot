@@ -220,7 +220,7 @@ def prepare_payload(channelid):
     global maxlen, args
     memory = prepare_memory(channelid)
     prompt = concat_history(channelid)
-    basestops = ["\n###", "### ", "[END]"]
+    basestops = ["\n###", "### ", "[END]", "[end]"]
     custom_name_stops = get_stoplist(channelid)
     stops = basestops + custom_name_stops
     payload = {
