@@ -387,6 +387,9 @@ async def on_message(message):
                         await message.channel.send("New bot backend override set for this channel.")
                 except Exception:
                     await message.channel.send("Sorry, the command failed.")
+    else:
+        if message.clean_content.startswith("/botwhitelist") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
+            await message.channel.send("Only the bot admin can whitelist a channel.")
 
     # gate before nonwhitelisted channels
     if channelid not in bot_data:
