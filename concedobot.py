@@ -16,6 +16,7 @@ import base64
 import json
 from dotenv import load_dotenv
 import argparse # Import argparse
+import re
 from discord import app_commands
 
 # Create the argument parser
@@ -36,8 +37,8 @@ else:
     load_dotenv()
 
 # Check for required environment variables
-if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv("ADMIN_NAME"):
-    print("Missing .env variables. Please create a file named .env and ensure KAI_ENDPOINT, BOT_TOKEN, and ADMIN_NAME are set in the .env file.")
+if (not os.getenv("KAI_ENDPOINT") and not os.getenv("OAI_ENDPOINT")) or not os.getenv("BOT_TOKEN") or not os.getenv("ADMIN_NAME"):
+    print("Missing .env variables. Please create a file named .env and ensure BOT_TOKEN, ADMIN_NAME, and either KAI_ENDPOINT or OAI_ENDPOINT are set in the .env file.")
     exit()
 
 intents = discord.Intents.all()
@@ -45,8 +46,13 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 ready_to_go = False
 busy = threading.Lock() # a global flag, never handle more than 1 request at a time
-submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
-imggen_endpoint = os.getenv("KAI_ENDPOINT") + "/sdapi/v1/txt2img"
+oai_endpoint = os.getenv("OAI_ENDPOINT", "").rstrip("/")
+oai_api_key = os.getenv("OAI_API_KEY", "")
+oai_model = os.getenv("OAI_MODEL", "gpt-4o-mini")
+oai_chat_mode = oai_endpoint != ""
+kai_endpoint = os.getenv("KAI_ENDPOINT", "").rstrip("/")
+submit_endpoint = kai_endpoint + "/api/v1/generate" if kai_endpoint else ""
+imggen_endpoint = kai_endpoint + "/sdapi/v1/txt2img" if kai_endpoint else ""
 admin_name = os.getenv("ADMIN_NAME")
 maxlen = args.maxlen # from args
 
@@ -127,6 +133,20 @@ def concat_history(channelid):
         prompt += "### " + msg + "[END]\n"
     prompt += "### " + client.user.display_name + ":\n"
     return prompt
+
+def concat_openai_history(channelid):
+    global bot_data
+    currchannel = bot_data[channelid]
+    chatlog = ""
+    for msg in currchannel.chat_history:
+        chatlog += msg + "\n\n"
+    bot_name = client.user.display_name
+    return (
+        "The following is the recent Discord conversation log.\n\n"
+        f"{chatlog}"
+        f"Reply as {bot_name} to the latest message. "
+        f"Do not prefix your response with {bot_name}: or any speaker label."
+    )
 
 def get_stoplist(channelid):
     global bot_data
@@ -247,6 +267,63 @@ def prepare_payload(channelid):
     }
 
     return payload
+
+def prepare_oai_payload(channelid):
+    global maxlen, oai_model
+    system_prompt = prepare_memory(channelid)
+    user_prompt = concat_openai_history(channelid)
+    return {
+        "model": oai_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "max_tokens": maxlen,
+        "temperature": 0.8,
+        "top_p": 0.9
+    }
+
+def oai_chat_endpoint(endpoint):
+    trimmed = endpoint.rstrip("/")
+    if trimmed.endswith("/chat/completions"):
+        return trimmed
+    if trimmed.endswith("/v1"):
+        return trimmed + "/chat/completions"
+    return trimmed + "/v1/chat/completions"
+
+def post_oai_chat(endpoint, payload):
+    headers = {}
+    if oai_api_key:
+        headers["Authorization"] = f"Bearer {oai_api_key}"
+    return requests.post(oai_chat_endpoint(endpoint), json=payload, headers=headers)
+
+def is_oai_backend(endpoint):
+    if not endpoint:
+        return False
+    lowered = endpoint.lower()
+    return "/chat/completions" in lowered
+
+def extract_bot_reply(response, is_oai_response):
+    if response.status_code != 200:
+        print(f"ERROR: response: {response}")
+        return ""
+    data = response.json()
+    if is_oai_response:
+        return data["choices"][0]["message"]["content"]
+    return data["results"][0]["text"]
+
+def trim_bot_name_prefix(text):
+    bot_names = [client.user.display_name, client.user.name]
+    cleaned = text.strip()
+    for bot_name in bot_names:
+        if not bot_name:
+            continue
+        pattern = r"^\s*(?:###\s*)?" + re.escape(bot_name) + r"\s*:\s*"
+        cleaned = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+def trim_end_delimiter(text):
+    return re.split(r"\[END\]", text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
 
 def prepare_vision_payload(b64img, channelid, reply_in_character): #two modes, if botdescribe is used, then the image is in character. otherwise, the description is neutral and HIDDEN from the user.
     global maxlen, args
@@ -411,6 +488,9 @@ async def handle_fallback_bot_command(message):
         print(f"Reset channel: {channelid}")
         await message.channel.send("Cleared bot conversation history in this channel.")
     elif command == "/botdescribe":
+        if not submit_endpoint:
+            await message.channel.send("Image description requires KAI_ENDPOINT to be configured.")
+            return True
         uploadedimg = None
         for attachment in message.attachments:
             if attachment.content_type and 'image' in attachment.content_type:
@@ -430,6 +510,7 @@ async def handle_fallback_bot_command(message):
                     payload = prepare_vision_payload(uploadedimg, channelid, "roleplay" in args_text.lower())
                     print(payload)
                     sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+                    print(f"Sending Request to {sep}")
                     response = requests.post(sep, json=payload)
                     result = response.json()["results"][0]["text"] if response.status_code == 200 else ""
                     if result != "":
@@ -440,6 +521,9 @@ async def handle_fallback_bot_command(message):
             finally:
                 busy.release()
     elif command == "/botdraw":
+        if not imggen_endpoint:
+            await message.channel.send("Image generation requires KAI_ENDPOINT to be configured.")
+            return True
         genimgprompt = args_text
         if currchannel.bot_hasfilter and detect_nsfw_text(genimgprompt):
             await message.channel.send("Sorry, the image prompt filter prevents me from drawing this image.")
@@ -618,6 +702,9 @@ async def botdescribe(interaction: discord.Interaction, image: discord.Attachmen
     currchannel = await require_whitelisted(interaction)
     if not currchannel:
         return
+    if not submit_endpoint:
+        await interaction.response.send_message("Image description requires KAI_ENDPOINT to be configured.")
+        return
     if not image.content_type or 'image' not in image.content_type:
         await interaction.response.send_message("Sorry, no image was uploaded.")
         return
@@ -635,6 +722,7 @@ async def botdescribe(interaction: discord.Interaction, image: discord.Attachmen
             payload = prepare_vision_payload(uploadedimg, interaction.channel_id, roleplay)
             print(payload)
             sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+            print(f"Sending Request to {sep}")
             response = requests.post(sep, json=payload)
             result = ""
             if response.status_code == 200:
@@ -657,6 +745,9 @@ async def botdescribe(interaction: discord.Interaction, image: discord.Attachmen
 async def botdraw(interaction: discord.Interaction, prompt: str):
     currchannel = await require_whitelisted(interaction)
     if not currchannel:
+        return
+    if not imggen_endpoint:
+        await interaction.response.send_message("Image generation requires KAI_ENDPOINT to be configured.")
         return
     genimgprompt = prompt.strip()
     if currchannel.bot_hasfilter and detect_nsfw_text(genimgprompt):
@@ -748,16 +839,16 @@ async def on_message(message):
                 async with message.channel.typing():
                     # keep awake on any reply
                     currchannel.bot_reply_timestamp = time.time()
-                    payload = prepare_payload(channelid)
+                    sep = (oai_endpoint if oai_chat_mode else submit_endpoint) if currchannel.bot_override_backend=="" else currchannel.bot_override_backend
+                    use_oai = oai_chat_mode if currchannel.bot_override_backend=="" else is_oai_backend(sep)
+                    payload = prepare_oai_payload(channelid) if use_oai else prepare_payload(channelid)
                     print(payload)
-                    sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
-                    response = requests.post(sep, json=payload)
-                    result = ""
-                    if response.status_code == 200:
-                        result = response.json()["results"][0]["text"]
+                    print(f"Sending Request to {sep}")
+                    if use_oai:
+                        response = post_oai_chat(sep, payload)
                     else:
-                        print(f"ERROR: response: {response}")
-                        result = ""
+                        response = requests.post(sep, json=payload)
+                    result = trim_bot_name_prefix(trim_end_delimiter(extract_bot_reply(response, use_oai)))
 
                     #no need to clean result, if all formatting goes well
                     if result!="":
@@ -771,4 +862,3 @@ try:
     client.run(os.getenv("BOT_TOKEN"))
 except discord.errors.LoginFailure:
     print("\n\nBot failed to login to discord")
-
