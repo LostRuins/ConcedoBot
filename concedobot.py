@@ -11,13 +11,12 @@ import requests
 import os
 import threading
 import time
-import random
 import io
 import base64
 import json
 from dotenv import load_dotenv
-import urllib
 import argparse # Import argparse
+from discord import app_commands
 
 # Create the argument parser
 parser = argparse.ArgumentParser(description='Concedo\'s discord butler.')
@@ -42,7 +41,8 @@ if not os.getenv("KAI_ENDPOINT") or not os.getenv("BOT_TOKEN") or not os.getenv(
     exit()
 
 intents = discord.Intents.all()
-client = discord.Client(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 ready_to_go = False
 busy = threading.Lock() # a global flag, never handle more than 1 request at a time
 submit_endpoint = os.getenv("KAI_ENDPOINT") + "/api/v1/generate"
@@ -289,10 +289,411 @@ def detect_nsfw_text(input_text):
     matches = re.findall(pattern, input_text, flags=re.IGNORECASE)
     return True if matches else False
 
+def is_bot_admin(user):
+    return user.name.lower() == admin_name.lower()
+
+async def require_admin(interaction):
+    if is_bot_admin(interaction.user):
+        return True
+    await interaction.response.send_message("Only the bot admin can use this command.", ephemeral=True)
+    return False
+
+def get_channel_data(channelid):
+    return bot_data.get(channelid)
+
+async def require_whitelisted(interaction):
+    currchannel = get_channel_data(interaction.channel_id)
+    if currchannel:
+        return currchannel
+    await interaction.response.send_message("This channel is not whitelisted yet.", ephemeral=True)
+    return None
+
+def fallback_command_parts(message):
+    if message.author == client.user or not message.clean_content.startswith("/"):
+        return None, ""
+    if client.user not in message.mentions and f'@{client.user.name}' not in message.clean_content and f'@{client.user.display_name}' not in message.clean_content:
+        return None, ""
+    command, _, rest = message.clean_content.partition(" ")
+    rest = rest.replace(f'@{client.user.display_name}', '')
+    rest = rest.replace(f'@{client.user.name}', '').strip()
+    return command.lower(), rest
+
+async def handle_fallback_bot_command(message):
+    global maxlen
+
+    command, args_text = fallback_command_parts(message)
+    if not command:
+        return False
+
+    channelid = message.channel.id
+    is_admin = is_bot_admin(message.author)
+
+    if command == "/botwhitelist":
+        if not is_admin:
+            await message.channel.send("Only the bot admin can whitelist a channel.")
+            return True
+        if channelid not in bot_data:
+            print(f"Add new channel: {channelid}")
+            rtim = time.time() - 9999 #sleep first
+            bot_data[channelid] = BotChannelData([],rtim)
+            await message.channel.send("Channel added to the whitelist. Ping me to talk.")
+        else:
+            await message.channel.send("Channel already whitelisted previously. Please blacklist and then whitelist me here again.")
+        return True
+
+    if channelid not in bot_data:
+        await message.channel.send("This channel is not whitelisted yet.")
+        return True
+
+    currchannel = bot_data[channelid]
+
+    if command in ("/botblacklist", "/botmaxlen", "/botidletime", "/botfilteroff", "/botfilteron", "/botsavesettings", "/botmemory", "/botbackend"):
+        if not is_admin:
+            await message.channel.send("Only the bot admin can use this command.")
+            return True
+
+        if command == "/botblacklist":
+            del bot_data[channelid]
+            print(f"Remove channel: {channelid}")
+            await message.channel.send("Channel removed from the whitelist, I will no longer reply here.")
+        elif command == "/botmaxlen":
+            try:
+                oldlen = maxlen
+                maxlen = int(args_text.split()[0])
+                print(f"Maxlen: {channelid} to {maxlen}")
+                await message.channel.send(f"Maximum response length changed from {oldlen} to {maxlen}.")
+            except Exception:
+                await message.channel.send("Sorry, the command failed.")
+        elif command == "/botidletime":
+            try:
+                oldval = currchannel.bot_idletime
+                currchannel.bot_idletime = int(args_text.split()[0])
+                print(f"Idletime: {channelid} to {currchannel.bot_idletime}")
+                await message.channel.send(f"Idle timeout changed from {oldval} to {currchannel.bot_idletime}.")
+            except Exception:
+                await message.channel.send("Sorry, the command failed.")
+        elif command == "/botfilteroff":
+            currchannel.bot_hasfilter = False
+            await message.channel.send("Image prompts will no longer be filtered.")
+        elif command == "/botfilteron":
+            currchannel.bot_hasfilter = True
+            await message.channel.send("Text-filter will be applied to image prompts.")
+        elif command == "/botsavesettings":
+            export_config()
+            await message.channel.send("Bot config saved.")
+        elif command == "/botmemory":
+            currchannel.bot_override_memory = args_text
+            print(f"BotMemory: {channelid} to {args_text}")
+            if args_text == "":
+                await message.channel.send("Bot memory override for this channel cleared.")
+            else:
+                await message.channel.send("New bot memory override set for this channel.")
+        elif command == "/botbackend":
+            currchannel.bot_override_backend = args_text
+            print(f"BotBackend: {channelid} to {args_text}")
+            if args_text == "":
+                await message.channel.send("Bot backend override for this channel cleared.")
+            else:
+                await message.channel.send("New bot backend override set for this channel.")
+        return True
+
+    if command == "/botsleep":
+        currchannel.bot_reply_timestamp = time.time() - 9999
+        await message.channel.send("Entering sleep mode. Ping me to wake me up again.")
+    elif command == "/botstatus":
+        print(f"Status channel: {channelid}")
+        lastreq = int(time.time() - currchannel.bot_reply_timestamp)
+        lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
+        await message.channel.send(f"I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
+    elif command == "/botreset":
+        currchannel.chat_history = []
+        currchannel.bot_reply_timestamp = time.time() - 9999
+        print(f"Reset channel: {channelid}")
+        await message.channel.send("Cleared bot conversation history in this channel.")
+    elif command == "/botdescribe":
+        uploadedimg = None
+        for attachment in message.attachments:
+            if attachment.content_type and 'image' in attachment.content_type:
+                print(f"Fetching image: {attachment.url}")
+                uploadedimg = base64.b64encode(await attachment.read()).decode('utf-8')
+                print("Image fetched")
+                break
+        if not uploadedimg:
+            await message.channel.send("Sorry, no image was uploaded.")
+        elif not busy.acquire(blocking=False):
+            await message.channel.send("I am busy generating a response. Please try again shortly.")
+        else:
+            try:
+                await message.channel.send("Attempting to describe the provided image, please wait.")
+                async with message.channel.typing():
+                    currchannel.bot_reply_timestamp = time.time()
+                    payload = prepare_vision_payload(uploadedimg, channelid, "roleplay" in args_text.lower())
+                    print(payload)
+                    sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+                    response = requests.post(sep, json=payload)
+                    result = response.json()["results"][0]["text"] if response.status_code == 200 else ""
+                    if result != "":
+                        append_history(channelid, message.author.display_name, f"(Attached an Image: {result})")
+                        await message.channel.send(f"Image Description: {result}")
+                    else:
+                        await message.channel.send("Sorry, the image transcription failed!")
+            finally:
+                busy.release()
+    elif command == "/botdraw":
+        genimgprompt = args_text
+        if currchannel.bot_hasfilter and detect_nsfw_text(genimgprompt):
+            await message.channel.send("Sorry, the image prompt filter prevents me from drawing this image.")
+        elif not busy.acquire(blocking=False):
+            await message.channel.send("I am busy generating a response. Please try again shortly.")
+        else:
+            try:
+                await message.channel.send("I will attempt to draw your image. Please stand by.")
+                async with message.channel.typing():
+                    currchannel.bot_reply_timestamp = time.time()
+                    print(f"Gen Img: {genimgprompt}")
+                    payload = prepare_img_payload(channelid, genimgprompt)
+                    response = requests.post(imggen_endpoint, json=payload)
+                    result = ""
+                    if response.status_code == 200:
+                        imgs = response.json()["images"]
+                        if imgs and len(imgs) > 0:
+                            result = imgs[0]
+                    else:
+                        print(f"ERROR: response: {response}")
+                    if result:
+                        file = discord.File(io.BytesIO(base64.b64decode(result)),filename='drawimage.png')
+                        await message.channel.send(file=file)
+                    else:
+                        await message.channel.send("Sorry, the image generation failed!")
+            finally:
+                busy.release()
+    else:
+        return False
+
+    return True
+
+@tree.command(name="botwhitelist", description="Whitelist this channel for ConcedoBot.")
+async def botwhitelist(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
+    channelid = interaction.channel_id
+    if channelid not in bot_data:
+        print(f"Add new channel: {channelid}")
+        rtim = time.time() - 9999 #sleep first
+        bot_data[channelid] = BotChannelData([],rtim)
+        await interaction.response.send_message("Channel added to the whitelist. Ping me to talk.")
+    else:
+        await interaction.response.send_message("Channel already whitelisted previously. Please blacklist and then whitelist me here again.")
+
+@tree.command(name="botblacklist", description="Remove this channel from ConcedoBot's whitelist.")
+async def botblacklist(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
+    channelid = interaction.channel_id
+    if channelid in bot_data:
+        del bot_data[channelid]
+        print(f"Remove channel: {channelid}")
+        await interaction.response.send_message("Channel removed from the whitelist, I will no longer reply here.")
+    else:
+        await interaction.response.send_message("This channel was not whitelisted.", ephemeral=True)
+
+@tree.command(name="botmaxlen", description="Set the global maximum response length.")
+@app_commands.describe(length="Maximum response length in tokens.")
+async def botmaxlen(interaction: discord.Interaction, length: int):
+    global maxlen
+    if not await require_admin(interaction):
+        return
+    if not await require_whitelisted(interaction):
+        return
+    oldlen = maxlen
+    maxlen = length
+    print(f"Maxlen: {interaction.channel_id} to {length}")
+    await interaction.response.send_message(f"Maximum response length changed from {oldlen} to {length}.")
+
+@tree.command(name="botidletime", description="Set this channel's idle timeout in seconds.")
+@app_commands.describe(seconds="Seconds before the bot enters idle mode.")
+async def botidletime(interaction: discord.Interaction, seconds: int):
+    if not await require_admin(interaction):
+        return
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    oldval = currchannel.bot_idletime
+    currchannel.bot_idletime = seconds
+    print(f"Idletime: {interaction.channel_id} to {seconds}")
+    await interaction.response.send_message(f"Idle timeout changed from {oldval} to {seconds}.")
+
+@tree.command(name="botfilteroff", description="Disable the image prompt text filter in this channel.")
+async def botfilteroff(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    currchannel.bot_hasfilter = False
+    await interaction.response.send_message("Image prompts will no longer be filtered.")
+
+@tree.command(name="botfilteron", description="Enable the image prompt text filter in this channel.")
+async def botfilteron(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    currchannel.bot_hasfilter = True
+    await interaction.response.send_message("Text-filter will be applied to image prompts.")
+
+@tree.command(name="botsavesettings", description="Save whitelisted channels and bot settings to disk.")
+async def botsavesettings(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
+    if not await require_whitelisted(interaction):
+        return
+    export_config()
+    await interaction.response.send_message("Bot config saved.")
+
+@tree.command(name="botmemory", description="Set or clear this channel's bot memory override.")
+@app_commands.describe(prompt="Replacement memory prompt. Leave blank to clear the override.")
+async def botmemory(interaction: discord.Interaction, prompt: str = ""):
+    if not await require_admin(interaction):
+        return
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    memprompt = prompt.strip()
+    currchannel.bot_override_memory = memprompt
+    print(f"BotMemory: {interaction.channel_id} to {memprompt}")
+    if memprompt == "":
+        await interaction.response.send_message("Bot memory override for this channel cleared.")
+    else:
+        await interaction.response.send_message("New bot memory override set for this channel.")
+
+@tree.command(name="botbackend", description="Set or clear this channel's KCPP backend override.")
+@app_commands.describe(url="Backend base URL. Leave blank to clear the override.")
+async def botbackend(interaction: discord.Interaction, url: str = ""):
+    if not await require_admin(interaction):
+        return
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    backend = url.strip()
+    currchannel.bot_override_backend = backend
+    print(f"BotBackend: {interaction.channel_id} to {backend}")
+    if backend == "":
+        await interaction.response.send_message("Bot backend override for this channel cleared.")
+    else:
+        await interaction.response.send_message("New bot backend override set for this channel.")
+
+@tree.command(name="botsleep", description="Immediately put ConcedoBot to sleep in this channel.")
+async def botsleep(interaction: discord.Interaction):
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    currchannel.bot_reply_timestamp = time.time() - 9999
+    await interaction.response.send_message("Entering sleep mode. Ping me to wake me up again.")
+
+@tree.command(name="botstatus", description="Show ConcedoBot's current status in this channel.")
+async def botstatus(interaction: discord.Interaction):
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    print(f"Status channel: {interaction.channel_id}")
+    lastreq = int(time.time() - currchannel.bot_reply_timestamp)
+    lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
+    await interaction.response.send_message(f"I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
+
+@tree.command(name="botreset", description="Clear this channel's conversation history and go to sleep.")
+async def botreset(interaction: discord.Interaction):
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    currchannel.chat_history = []
+    currchannel.bot_reply_timestamp = time.time() - 9999
+    print(f"Reset channel: {interaction.channel_id}")
+    await interaction.response.send_message("Cleared bot conversation history in this channel.")
+
+@tree.command(name="botdescribe", description="Describe an uploaded image.")
+@app_commands.describe(image="Image to describe.", roleplay="Reply in-character instead of neutrally.")
+async def botdescribe(interaction: discord.Interaction, image: discord.Attachment, roleplay: bool = False):
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    if not image.content_type or 'image' not in image.content_type:
+        await interaction.response.send_message("Sorry, no image was uploaded.")
+        return
+    if not busy.acquire(blocking=False):
+        await interaction.response.send_message("I am busy generating a response. Please try again shortly.", ephemeral=True)
+        return
+    try:
+        await interaction.response.defer(thinking=True)
+        print(f"Fetching image: {image.url}")
+        uploadedimg = base64.b64encode(await image.read()).decode('utf-8')
+        print("Image fetched")
+        channel = interaction.channel
+        async with channel.typing():
+            currchannel.bot_reply_timestamp = time.time()
+            payload = prepare_vision_payload(uploadedimg, interaction.channel_id, roleplay)
+            print(payload)
+            sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+            response = requests.post(sep, json=payload)
+            result = ""
+            if response.status_code == 200:
+                result = response.json()["results"][0]["text"]
+            else:
+                print(f"ERROR: response: {response}")
+            if result != "":
+                append_history(interaction.channel_id, interaction.user.display_name, f"(Attached an Image: {result})")
+                await interaction.followup.send(f"Image Description: {result}")
+            else:
+                await interaction.followup.send("Sorry, the image transcription failed!")
+    except Exception as e:
+        print(f"Error: {e}")
+        await interaction.followup.send("Sorry, the image transcription failed!")
+    finally:
+        busy.release()
+
+@tree.command(name="botdraw", description="Generate an image from a prompt.")
+@app_commands.describe(prompt="Prompt to draw.")
+async def botdraw(interaction: discord.Interaction, prompt: str):
+    currchannel = await require_whitelisted(interaction)
+    if not currchannel:
+        return
+    genimgprompt = prompt.strip()
+    if currchannel.bot_hasfilter and detect_nsfw_text(genimgprompt):
+        await interaction.response.send_message("Sorry, the image prompt filter prevents me from drawing this image.")
+        return
+    if not busy.acquire(blocking=False):
+        await interaction.response.send_message("I am busy generating a response. Please try again shortly.", ephemeral=True)
+        return
+    try:
+        await interaction.response.defer(thinking=True)
+        channel = interaction.channel
+        async with channel.typing():
+            currchannel.bot_reply_timestamp = time.time()
+            print(f"Gen Img: {genimgprompt}")
+            payload = prepare_img_payload(interaction.channel_id, genimgprompt)
+            response = requests.post(imggen_endpoint, json=payload)
+            result = ""
+            if response.status_code == 200:
+                imgs = response.json()["images"]
+                if imgs and len(imgs) > 0:
+                    result = imgs[0]
+            else:
+                print(f"ERROR: response: {response}")
+            if result:
+                print("Convert and upload file...")
+                file = discord.File(io.BytesIO(base64.b64decode(result)),filename='drawimage.png')
+                await interaction.followup.send(file=file)
+            else:
+                await interaction.followup.send("Sorry, the image generation failed!")
+    finally:
+        busy.release()
+
 @client.event
 async def on_ready():
     global ready_to_go
     import_config()
+    await tree.sync()
     print("Logged in as {0.user}".format(client))
     ready_to_go = True
 
@@ -306,197 +707,12 @@ async def on_message(message):
 
     channelid = message.channel.id
 
-    # handle admin only commands
-    if message.author.name.lower() == admin_name.lower():
-        if message.clean_content.startswith("/botwhitelist") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid not in bot_data:
-                print(f"Add new channel: {channelid}")
-                rtim = time.time() - 9999 #sleep first
-                bot_data[channelid] = BotChannelData([],rtim)
-                await message.channel.send("Channel added to the whitelist. Ping me to talk.")
-            else:
-                await message.channel.send("Channel already whitelisted previously. Please blacklist and then whitelist me here again.")
-
-        elif message.clean_content.startswith("/botblacklist") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                del bot_data[channelid]
-                print(f"Remove channel: {channelid}")
-                await message.channel.send("Channel removed from the whitelist, I will no longer reply here.")
-
-        elif message.clean_content.startswith("/botmaxlen ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                try:
-                    oldlen = maxlen
-                    newlen = int(message.clean_content.split()[1])
-                    maxlen = newlen
-                    print(f"Maxlen: {channelid} to {newlen}")
-                    await message.channel.send(f"Maximum response length changed from {oldlen} to {newlen}.")
-                except Exception:
-                    maxlen = 360
-                    await message.channel.send("Sorry, the command failed.")
-        elif message.clean_content.startswith("/botidletime ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                try:
-                    oldval = bot_data[channelid].bot_idletime
-                    newval = int(message.clean_content.split()[1])
-                    bot_data[channelid].bot_idletime = newval
-                    print(f"Idletime: {channelid} to {newval}")
-                    await message.channel.send(f"Idle timeout changed from {oldval} to {newval}.")
-                except Exception:
-                    bot_data[channelid].bot_idletime = 120
-                    await message.channel.send("Sorry, the command failed.")
-        elif message.clean_content.startswith("/botfilteroff") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                bot_data[channelid].bot_hasfilter = False
-                await message.channel.send("Image prompts will no longer be filtered.")
-        elif message.clean_content.startswith("/botfilteron") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                bot_data[channelid].bot_hasfilter = True
-                await message.channel.send("Text-filter will be applied to image prompts.")
-        elif message.clean_content.startswith("/botsavesettings") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                export_config()
-                await message.channel.send("Bot config saved.")
-        elif message.clean_content.startswith("/botmemory ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                try:
-                    memprompt = message.clean_content
-                    memprompt = memprompt.replace('/botmemory ','')
-                    memprompt = memprompt.replace(f'@{client.user.display_name}','')
-                    memprompt = memprompt.replace(f'@{client.user.name}','').strip()
-                    bot_data[channelid].bot_override_memory = memprompt
-                    print(f"BotMemory: {channelid} to {memprompt}")
-                    if memprompt=="":
-                        await message.channel.send("Bot memory override for this channel cleared.")
-                    else:
-                        await message.channel.send("New bot memory override set for this channel.")
-                except Exception:
-                    await message.channel.send("Sorry, the command failed.")
-        elif message.clean_content.startswith("/botbackend ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            if channelid in bot_data:
-                try:
-                    bbe = message.clean_content
-                    bbe = bbe.replace('/botbackend ','')
-                    bbe = bbe.replace(f'@{client.user.display_name}','')
-                    bbe = bbe.replace(f'@{client.user.name}','').strip()
-                    bot_data[channelid].bot_override_backend = bbe
-                    print(f"BotBackend: {channelid} to {bbe}")
-                    if bbe=="":
-                        await message.channel.send("Bot backend override for this channel cleared.")
-                    else:
-                        await message.channel.send("New bot backend override set for this channel.")
-                except Exception:
-                    await message.channel.send("Sorry, the command failed.")
-    else:
-        if message.clean_content.startswith("/botwhitelist") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-            await message.channel.send("Only the bot admin can whitelist a channel.")
+    if await handle_fallback_bot_command(message):
+        return
 
     # gate before nonwhitelisted channels
     if channelid not in bot_data:
        return
-
-    currchannel = bot_data[channelid]
-
-    # commands anyone can use
-    if message.clean_content.startswith("/botsleep") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-        instructions=[
-        'Entering sleep mode. Ping me to wake me up again.']
-        ins = random.choice(instructions)
-        currchannel.bot_reply_timestamp = time.time() - 9999
-        await message.channel.send(ins)
-    elif message.clean_content.startswith("/botstatus") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-        if channelid in bot_data:
-            print(f"Status channel: {channelid}")
-            lastreq = int(time.time() - currchannel.bot_reply_timestamp)
-            lockmsg = "busy generating a response" if busy.locked() else "awaiting any new requests"
-            await message.channel.send(f"I am currently online and {lockmsg}. The last request from this channel was {lastreq} seconds ago.")
-    elif message.clean_content.startswith("/botreset") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-        if channelid in bot_data:
-            currchannel.chat_history = []
-            currchannel.bot_reply_timestamp = time.time() - 9999
-            print(f"Reset channel: {channelid}")
-            instructions=[
-            "Cleared bot conversation history in this channel."
-            ]
-            ins = random.choice(instructions)
-            await message.channel.send(ins)
-    elif message.clean_content.startswith("/botdescribe ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-        if channelid in bot_data:
-            uploadedimg = None
-            try:
-                if message.attachments:
-                    for attachment in message.attachments:
-                        if attachment.content_type and 'image' in attachment.content_type:
-                            print(f"Fetching image: {attachment.url}")
-                            req = urllib.request.Request(attachment.url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'})
-                            with urllib.request.urlopen(req, timeout=30) as response:
-                                temp = response.read()
-                                uploadedimg = base64.b64encode(temp).decode('utf-8')
-                                print("Image fetched")
-            except Exception as e:
-                print(f"Error: {e}")
-                pass
-            if busy.acquire(blocking=False):
-                try:
-                    if not uploadedimg:
-                        await message.channel.send("Sorry, no image was uploaded.")
-                    else:
-                        await message.channel.send("Attempting to describe the provided image, please wait.")
-                        async with message.channel.typing():
-                            currchannel.bot_reply_timestamp = time.time()
-                            rp = "roleplay" in message.clean_content.lower()
-                            payload = prepare_vision_payload(uploadedimg,channelid,rp)
-                            print(payload)
-                            sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
-                            response = requests.post(sep, json=payload)
-                            result = ""
-                            if response.status_code == 200:
-                                result = response.json()["results"][0]["text"]
-                            else:
-                                print(f"ERROR: response: {response}")
-                                result = ""
-                            #no need to clean result, if all formatting goes well
-                            if result!="":
-                                append_history(channelid,message.author.display_name,f"(Attached an Image: {result})")
-                                await message.channel.send(f"Image Description: {result}")
-                            else:
-                                await message.channel.send("Sorry, the image transcription failed!")
-                finally:
-                    busy.release()
-    elif message.clean_content.startswith("/botdraw ") and (client.user in message.mentions or f'@{client.user.name}' in message.clean_content):
-        if channelid in bot_data:
-            if busy.acquire(blocking=False):
-                try:
-                    if currchannel.bot_hasfilter and detect_nsfw_text(message.clean_content):
-                        await message.channel.send("Sorry, the image prompt filter prevents me from drawing this image.")
-                    else:
-                        await message.channel.send("I will attempt to draw your image. Please stand by.")
-                        async with message.channel.typing():
-                            # keep awake on any reply
-                            currchannel.bot_reply_timestamp = time.time()
-                            genimgprompt = message.clean_content
-                            genimgprompt = genimgprompt.replace('/botdraw ','')
-                            genimgprompt = genimgprompt.replace(f'@{client.user.display_name}','')
-                            genimgprompt = genimgprompt.replace(f'@{client.user.name}','').strip()
-                            print(f"Gen Img: {genimgprompt}")
-                            payload = prepare_img_payload(channelid,genimgprompt)
-                            response = requests.post(imggen_endpoint, json=payload)
-                            result = ""
-                            if response.status_code == 200:
-                                imgs = response.json()["images"]
-                                if imgs and len(imgs) > 0:
-                                    result = imgs[0]
-                            else:
-                                print(f"ERROR: response: {response}")
-                                result = ""
-                            if result:
-                                print("Convert and upload file...")
-                                file = discord.File(io.BytesIO(base64.b64decode(result)),filename='drawimage.png')
-                                if file:
-                                    await message.channel.send(file=file)
-                finally:
-                    busy.release()
-
 
     # handle regular chat messages
     if message.author == client.user or message.clean_content.startswith(("/")):
