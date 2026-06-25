@@ -26,7 +26,7 @@ Admin Commands:
 /botfilteron - Enables the image prompt filter
 /botfilteroff - Disables the image prompt filter
 /botmemory [prompt] - Overrides the bot memory for this channel. Leave blank to clear.
-/botbackend [url] - Overrides the KCPP backend used by the bot in this channel. Leave blank to clear.
+/botbackend [url] [text_url] [vision_url] [image_url] - Overrides backends used by the bot in this channel. A bare url is a legacy text/vision override; named values can split text, vision, and image generation. Leave blank to clear.
 /botsavesettings - Saves whitelisted channels and bot memories to disk. Does not save chat history.
 ```
 

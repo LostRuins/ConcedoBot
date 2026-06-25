@@ -17,6 +17,7 @@ import json
 from dotenv import load_dotenv
 import argparse # Import argparse
 import re
+import shlex
 from discord import app_commands
 
 # Create the argument parser
@@ -55,6 +56,7 @@ submit_endpoint = kai_endpoint + "/api/v1/generate" if kai_endpoint else ""
 imggen_endpoint = kai_endpoint + "/sdapi/v1/txt2img" if kai_endpoint else ""
 admin_name = os.getenv("ADMIN_NAME")
 maxlen = args.maxlen # from args
+CLEAR_BACKEND_VALUES = ("", "clear", "default", "none")
 
 class BotChannelData(): #key will be the channel ID
     def __init__(self, chat_history, bot_reply_timestamp):
@@ -65,6 +67,9 @@ class BotChannelData(): #key will be the channel ID
         self.bot_botloopcount = 0
         self.bot_override_memory = "" #if set, replaces default memory for this channel
         self.bot_override_backend = "" #if set, replaces default backend for this channel
+        self.bot_override_text_backend = "" #if set, replaces default text generation backend for this channel
+        self.bot_override_vision_backend = "" #if set, replaces default vision backend for this channel
+        self.bot_override_image_backend = "" #if set, replaces default image generation backend for this channel
 
 # bot storage
 bot_data = {} # a dict of all channels, each containing BotChannelData as value and channelid as key
@@ -94,7 +99,15 @@ def export_config():
     wls = []
     global settingsfile
     for key, d in bot_data.items():
-        wls.append({"key":key,"bot_idletime":d.bot_idletime,"bot_override_memory":d.bot_override_memory,"bot_override_backend":d.bot_override_backend})
+        wls.append({
+            "key": key,
+            "bot_idletime": d.bot_idletime,
+            "bot_override_memory": d.bot_override_memory,
+            "bot_override_backend": d.bot_override_backend,
+            "bot_override_text_backend": d.bot_override_text_backend,
+            "bot_override_vision_backend": d.bot_override_vision_backend,
+            "bot_override_image_backend": d.bot_override_image_backend
+        })
     script_directory = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(script_directory, settingsfile)
     with open(file_path, 'w') as file:
@@ -118,7 +131,10 @@ def import_config():
                         bot_data[channelid] = BotChannelData([],rtim)
                         bot_data[channelid].bot_idletime = int(d['bot_idletime'])
                         bot_data[channelid].bot_override_memory = d['bot_override_memory']
-                        bot_data[channelid].bot_override_backend = d['bot_override_backend']
+                        bot_data[channelid].bot_override_backend = d.get('bot_override_backend', '')
+                        bot_data[channelid].bot_override_text_backend = d.get('bot_override_text_backend', '')
+                        bot_data[channelid].bot_override_vision_backend = d.get('bot_override_vision_backend', '')
+                        bot_data[channelid].bot_override_image_backend = d.get('bot_override_image_backend', '')
         else:
             print(f"No saved botsettings found at {file_path}")
     except Exception:
@@ -297,11 +313,101 @@ def post_oai_chat(endpoint, payload):
         headers["Authorization"] = f"Bearer {oai_api_key}"
     return requests.post(oai_chat_endpoint(endpoint), json=payload, headers=headers)
 
+def clean_endpoint(endpoint):
+    return endpoint.strip().rstrip("/") if endpoint else ""
+
 def is_oai_backend(endpoint):
     if not endpoint:
         return False
     lowered = endpoint.lower()
     return "/chat/completions" in lowered
+
+def get_text_endpoint(currchannel):
+    return clean_endpoint(currchannel.bot_override_text_backend or currchannel.bot_override_backend or (oai_endpoint if oai_chat_mode else submit_endpoint))
+
+def get_vision_endpoint(currchannel):
+    return clean_endpoint(currchannel.bot_override_vision_backend or currchannel.bot_override_backend or submit_endpoint)
+
+def get_image_endpoint(currchannel):
+    return clean_endpoint(currchannel.bot_override_image_backend or imggen_endpoint)
+
+def clear_backend_overrides(currchannel):
+    currchannel.bot_override_backend = ""
+    currchannel.bot_override_text_backend = ""
+    currchannel.bot_override_vision_backend = ""
+    currchannel.bot_override_image_backend = ""
+
+def describe_backend_overrides(currchannel):
+    parts = []
+    if currchannel.bot_override_backend:
+        parts.append(f"legacy={currchannel.bot_override_backend}")
+    if currchannel.bot_override_text_backend:
+        parts.append(f"text={currchannel.bot_override_text_backend}")
+    if currchannel.bot_override_vision_backend:
+        parts.append(f"vision={currchannel.bot_override_vision_backend}")
+    if currchannel.bot_override_image_backend:
+        parts.append(f"image={currchannel.bot_override_image_backend}")
+    return ", ".join(parts)
+
+def set_backend_override(currchannel, key, value):
+    normalized = clean_endpoint(value)
+    if normalized.lower() in CLEAR_BACKEND_VALUES:
+        normalized = ""
+    if key == "url":
+        currchannel.bot_override_backend = normalized
+    elif key == "text":
+        currchannel.bot_override_text_backend = normalized
+    elif key == "vision":
+        currchannel.bot_override_vision_backend = normalized
+    elif key == "image":
+        currchannel.bot_override_image_backend = normalized
+
+def apply_backend_args(currchannel, args_text):
+    text = args_text.strip()
+    if text == "":
+        clear_backend_overrides(currchannel)
+        return "cleared"
+
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+
+    updates = {}
+    for token in tokens:
+        if "=" not in token:
+            updates = {}
+            break
+        key, value = token.split("=", 1)
+        key = key.lower().strip()
+        if key not in ("url", "text", "vision", "image"):
+            updates = {}
+            break
+        updates[key] = value
+
+    if not updates:
+        set_backend_override(currchannel, "url", text)
+    else:
+        for key, value in updates.items():
+            set_backend_override(currchannel, key, value)
+
+    return "set" if describe_backend_overrides(currchannel) else "cleared"
+
+def apply_backend_options(currchannel, url="", text_url="", vision_url="", image_url=""):
+    if not any([url, text_url, vision_url, image_url]):
+        clear_backend_overrides(currchannel)
+        return "cleared"
+
+    if url:
+        set_backend_override(currchannel, "url", url)
+    if text_url:
+        set_backend_override(currchannel, "text", text_url)
+    if vision_url:
+        set_backend_override(currchannel, "vision", vision_url)
+    if image_url:
+        set_backend_override(currchannel, "image", image_url)
+
+    return "set" if describe_backend_overrides(currchannel) else "cleared"
 
 def extract_bot_reply(response, is_oai_response):
     if response.status_code != 200:
@@ -466,12 +572,13 @@ async def handle_fallback_bot_command(message):
             else:
                 await message.channel.send("New bot memory override set for this channel.")
         elif command == "/botbackend":
-            currchannel.bot_override_backend = args_text
-            print(f"BotBackend: {channelid} to {args_text}")
-            if args_text == "":
+            status = apply_backend_args(currchannel, args_text)
+            overrides = describe_backend_overrides(currchannel)
+            print(f"BotBackend: {channelid} to {overrides}")
+            if status == "cleared":
                 await message.channel.send("Bot backend override for this channel cleared.")
             else:
-                await message.channel.send("New bot backend override set for this channel.")
+                await message.channel.send(f"New bot backend override set for this channel: {overrides}.")
         return True
 
     if command == "/botsleep":
@@ -488,8 +595,9 @@ async def handle_fallback_bot_command(message):
         print(f"Reset channel: {channelid}")
         await message.channel.send("Cleared bot conversation history in this channel.")
     elif command == "/botdescribe":
-        if not submit_endpoint:
-            await message.channel.send("Image description requires KAI_ENDPOINT to be configured.")
+        vision_backend = get_vision_endpoint(currchannel)
+        if not vision_backend:
+            await message.channel.send("Image description requires KAI_ENDPOINT or a vision backend override to be configured.")
             return True
         uploadedimg = None
         for attachment in message.attachments:
@@ -509,7 +617,7 @@ async def handle_fallback_bot_command(message):
                     currchannel.bot_reply_timestamp = time.time()
                     payload = prepare_vision_payload(uploadedimg, channelid, "roleplay" in args_text.lower())
                     print(payload)
-                    sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+                    sep = get_vision_endpoint(currchannel)
                     print(f"Sending Request to {sep}")
                     response = requests.post(sep, json=payload)
                     result = response.json()["results"][0]["text"] if response.status_code == 200 else ""
@@ -521,8 +629,9 @@ async def handle_fallback_bot_command(message):
             finally:
                 busy.release()
     elif command == "/botdraw":
-        if not imggen_endpoint:
-            await message.channel.send("Image generation requires KAI_ENDPOINT to be configured.")
+        image_backend = get_image_endpoint(currchannel)
+        if not image_backend:
+            await message.channel.send("Image generation requires KAI_ENDPOINT or an image backend override to be configured.")
             return True
         genimgprompt = args_text
         if currchannel.bot_hasfilter and detect_nsfw_text(genimgprompt):
@@ -536,7 +645,7 @@ async def handle_fallback_bot_command(message):
                     currchannel.bot_reply_timestamp = time.time()
                     print(f"Gen Img: {genimgprompt}")
                     payload = prepare_img_payload(channelid, genimgprompt)
-                    response = requests.post(imggen_endpoint, json=payload)
+                    response = requests.post(image_backend, json=payload)
                     result = ""
                     if response.status_code == 200:
                         imgs = response.json()["images"]
@@ -652,21 +761,26 @@ async def botmemory(interaction: discord.Interaction, prompt: str = ""):
     else:
         await interaction.response.send_message("New bot memory override set for this channel.")
 
-@tree.command(name="botbackend", description="Set or clear this channel's KCPP backend override.")
-@app_commands.describe(url="Backend base URL. Leave blank to clear the override.")
-async def botbackend(interaction: discord.Interaction, url: str = ""):
+@tree.command(name="botbackend", description="Set or clear this channel's backend overrides.")
+@app_commands.describe(
+    url="Legacy text/vision backend URL. Leave all fields blank to clear overrides.",
+    text_url="Text generation backend URL.",
+    vision_url="Vision backend URL.",
+    image_url="Image generation backend URL."
+)
+async def botbackend(interaction: discord.Interaction, url: str = "", text_url: str = "", vision_url: str = "", image_url: str = ""):
     if not await require_admin(interaction):
         return
     currchannel = await require_whitelisted(interaction)
     if not currchannel:
         return
-    backend = url.strip()
-    currchannel.bot_override_backend = backend
-    print(f"BotBackend: {interaction.channel_id} to {backend}")
-    if backend == "":
+    status = apply_backend_options(currchannel, url, text_url, vision_url, image_url)
+    overrides = describe_backend_overrides(currchannel)
+    print(f"BotBackend: {interaction.channel_id} to {overrides}")
+    if status == "cleared":
         await interaction.response.send_message("Bot backend override for this channel cleared.")
     else:
-        await interaction.response.send_message("New bot backend override set for this channel.")
+        await interaction.response.send_message(f"New bot backend override set for this channel: {overrides}.")
 
 @tree.command(name="botsleep", description="Immediately put ConcedoBot to sleep in this channel.")
 async def botsleep(interaction: discord.Interaction):
@@ -702,8 +816,9 @@ async def botdescribe(interaction: discord.Interaction, image: discord.Attachmen
     currchannel = await require_whitelisted(interaction)
     if not currchannel:
         return
-    if not submit_endpoint:
-        await interaction.response.send_message("Image description requires KAI_ENDPOINT to be configured.")
+    vision_backend = get_vision_endpoint(currchannel)
+    if not vision_backend:
+        await interaction.response.send_message("Image description requires KAI_ENDPOINT or a vision backend override to be configured.")
         return
     if not image.content_type or 'image' not in image.content_type:
         await interaction.response.send_message("Sorry, no image was uploaded.")
@@ -721,7 +836,7 @@ async def botdescribe(interaction: discord.Interaction, image: discord.Attachmen
             currchannel.bot_reply_timestamp = time.time()
             payload = prepare_vision_payload(uploadedimg, interaction.channel_id, roleplay)
             print(payload)
-            sep = (submit_endpoint if currchannel.bot_override_backend=="" else currchannel.bot_override_backend)
+            sep = get_vision_endpoint(currchannel)
             print(f"Sending Request to {sep}")
             response = requests.post(sep, json=payload)
             result = ""
@@ -746,8 +861,9 @@ async def botdraw(interaction: discord.Interaction, prompt: str):
     currchannel = await require_whitelisted(interaction)
     if not currchannel:
         return
-    if not imggen_endpoint:
-        await interaction.response.send_message("Image generation requires KAI_ENDPOINT to be configured.")
+    image_backend = get_image_endpoint(currchannel)
+    if not image_backend:
+        await interaction.response.send_message("Image generation requires KAI_ENDPOINT or an image backend override to be configured.")
         return
     genimgprompt = prompt.strip()
     if currchannel.bot_hasfilter and detect_nsfw_text(genimgprompt):
@@ -763,7 +879,7 @@ async def botdraw(interaction: discord.Interaction, prompt: str):
             currchannel.bot_reply_timestamp = time.time()
             print(f"Gen Img: {genimgprompt}")
             payload = prepare_img_payload(interaction.channel_id, genimgprompt)
-            response = requests.post(imggen_endpoint, json=payload)
+            response = requests.post(image_backend, json=payload)
             result = ""
             if response.status_code == 200:
                 imgs = response.json()["images"]
@@ -839,8 +955,8 @@ async def on_message(message):
                 async with message.channel.typing():
                     # keep awake on any reply
                     currchannel.bot_reply_timestamp = time.time()
-                    sep = (oai_endpoint if oai_chat_mode else submit_endpoint) if currchannel.bot_override_backend=="" else currchannel.bot_override_backend
-                    use_oai = oai_chat_mode if currchannel.bot_override_backend=="" else is_oai_backend(sep)
+                    sep = get_text_endpoint(currchannel)
+                    use_oai = is_oai_backend(sep) or (sep == oai_endpoint and oai_chat_mode)
                     payload = prepare_oai_payload(channelid) if use_oai else prepare_payload(channelid)
                     print(payload)
                     print(f"Sending Request to {sep}")
