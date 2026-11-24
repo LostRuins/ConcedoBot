@@ -42,7 +42,8 @@ if (not os.getenv("KAI_ENDPOINT") and not os.getenv("OAI_ENDPOINT")) or not os.g
     print("Missing .env variables. Please create a file named .env and ensure BOT_TOKEN, ADMIN_NAME, and either KAI_ENDPOINT or OAI_ENDPOINT are set in the .env file.")
     exit()
 
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 ready_to_go = False
