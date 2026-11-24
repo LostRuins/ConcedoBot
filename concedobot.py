@@ -414,10 +414,20 @@ def extract_bot_reply(response, is_oai_response):
     if response.status_code != 200:
         print(f"ERROR: response: {response}")
         return ""
-    data = response.json()
-    if is_oai_response:
-        return data["choices"][0]["message"]["content"]
-    return data["results"][0]["text"]
+    backend = "OpenAI-compatible" if is_oai_response else "KoboldCpp"
+    try:
+        data = response.json()
+        if is_oai_response:
+            text = data["choices"][0]["message"]["content"]
+        else:
+            text = data["results"][0]["text"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        print(f"ERROR: {backend} response has an invalid reply format")
+        return ""
+    if not isinstance(text, str) or not text.strip():
+        print(f"ERROR: {backend} response contains no reply text")
+        return ""
+    return text
 
 def trim_bot_name_prefix(text):
     bot_names = [client.user.display_name, client.user.name]

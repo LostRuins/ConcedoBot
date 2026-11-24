@@ -5,6 +5,7 @@ To Use:
 - Clone repo
 - pip install -r requirements.txt
 - create a new `.env` file based on `template.env`, fill in your credentials and endpoint. That file MUST be named `.env`
+- In the Discord Developer Portal, open your application’s **Bot** settings and enable **Message Content Intent** under **Privileged Gateway Intents**. ConcedoBot uses this privileged intent to read messages in whitelisted channels and use them as context for chat replies. [Discord’s guide to enabling privileged intents](https://support-dev.discord.com/hc/en-us/articles/6205754771351-How-do-I-get-Privileged-Intents-for-my-bot)
 - python3 concedobot.py [args]
 
 Available optional args:
